@@ -26,7 +26,7 @@ app.get('/health', async () => ({
 
 // ─── Data routes ─────────────────────────────────────────────────────────────
 
-await app.register(baseRoutes)
+await app.register(baseRoutes, { prefix: '/base' })
 
 // ─── Cron: sync daily at 03:00 ───────────────────────────────────────────────
 
