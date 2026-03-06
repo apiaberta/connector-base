@@ -2,6 +2,7 @@ import Fastify from 'fastify'
 import mongoose from 'mongoose'
 import cron from 'node-cron'
 import { baseRoutes } from './routes.js'
+import { metaRoutes } from './meta.js'
 import { syncContracts } from './sync.js'
 
 const SERVICE_NAME = 'connector-base'
@@ -27,6 +28,7 @@ app.get('/health', async () => ({
 
 // ─── Data routes ─────────────────────────────────────────────────────────────
 
+await app.register(metaRoutes)
 await app.register(baseRoutes, { prefix: '/base' })
 
 // ─── Cron: sync daily at 03:00 ───────────────────────────────────────────────
