@@ -1,6 +1,8 @@
 import Fastify from 'fastify'
 import mongoose from 'mongoose'
 import cron from 'node-cron'
+import swagger from '@fastify/swagger'
+import swaggerUi from '@fastify/swagger-ui'
 import { baseRoutes } from './routes.js'
 import { metaRoutes } from './meta.js'
 import { syncContracts } from './sync.js'
@@ -16,6 +18,30 @@ const app = Fastify({
       : undefined
   }
 })
+
+// ─── Swagger ─────────────────────────────────────────────────────────────────
+
+await app.register(swagger, {
+  openapi: {
+    info: {
+      title: 'API Aberta - BASE Connector',
+      description: 'Portuguese public contracts from BASE.gov.pt. NOTE: The official IMPIC API requires registration. Set BASE_API_KEY env var to enable live sync.',
+      version: '1.0.0',
+    },
+    servers: [{ url: `http://localhost:${PORT}` }],
+    tags: [
+      { name: 'Contracts', description: 'Public contracts from BASE.gov.pt' },
+      { name: 'Entities', description: 'Contracting entities' },
+    ],
+  },
+})
+
+await app.register(swaggerUi, {
+  routePrefix: '/docs',
+  uiConfig: { docExpansion: 'list' },
+})
+
+app.get('/swagger', async () => app.swagger())
 
 // ─── Health ──────────────────────────────────────────────────────────────────
 
