@@ -52,6 +52,15 @@ app.get('/health', async () => ({
   timestamp: new Date().toISOString()
 }))
 
+// ─── Health (aliased, for gateway /v1/contracts health check) ─────────────────
+
+app.get('/base/health', async () => ({
+  status:    'ok',
+  service:   SERVICE_NAME,
+  version:   '1.0.0',
+  timestamp: new Date().toISOString()
+}))
+
 // ─── Data routes ─────────────────────────────────────────────────────────────
 
 await app.register(metaRoutes)
