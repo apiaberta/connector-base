@@ -1,128 +1,285 @@
 /**
- * sync.js — BASE.gov.pt public contracts sync
+ * sync.js — BASE.gov.pt public contracts sync via dados.gov.pt XLSX
  *
- * Data source priority:
- * 1. IMPIC official API (requires BASE_API_KEY env var — request at impic.pt)
- * 2. Legacy endpoint (deprecated, may return HTML)
+ * Data source: dados.gov.pt dataset "Contratos Públicos - Portal Base - IMPIC"
+ * (https://dados.gov.pt/datasets/contratos-publicos-base-impic/)
  *
- * Register for API access: https://www.impic.pt/support/open.php
- * Topic: "Contratos Públicos / Pedido de acesso à API Portal Base"
+ * Downloads yearly XLSX files, parses them, and upserts into MongoDB.
+ * No API key required — dados.gov.pt is public domain (licença: other-pd).
+ *
+ * Yearly files: contratos2012.xlsx … contratos2026.xlsx
+ * All years are downloaded and synced on each full run.
  */
 
 import { Contract } from './models/contract.js'
 
-// IMPIC official API (used when BASE_API_KEY is set)
-const IMPIC_API_URL = 'https://api.impic.pt/base/v1'
-const API_KEY = process.env.BASE_API_KEY
+// ── dados.gov.pt API ──────────────────────────────────────────────────────────
 
-// Legacy endpoint (deprecated)
-const LEGACY_URL = 'https://www.base.gov.pt/Base4/pt/resultado'
+const DATASET_ID = '66d72d488ca4b7cb2de28712'
 
-const HEADERS = {
-  'User-Agent': 'apiaberta.pt/1.0 (open-data connector)',
-  'Accept': 'application/json, text/plain, */*',
+async function getResourceUrls(year) {
+  const url = `https://dados.gov.pt/api/1/datasets/${DATASET_ID}/`
+  const res = await fetch(url)
+  if (!res.ok) throw new Error(`dados.gov.pt API HTTP ${res.status}`)
+  const data = await res.json()
+  const resources = data.resources || []
+
+  // Find the XLSX file for the given year
+  const target = resources.find(r =>
+    r.format === 'xlsx' &&
+    (r.title || '').includes(`${year}`)
+  )
+  return target?.url || null
 }
 
-if (API_KEY) {
-  HEADERS['Authorization'] = `Bearer ${API_KEY}`
+async function downloadFile(url, destPath, logger) {
+  const res = await fetch(url)
+  if (!res.ok) throw new Error(`Download HTTP ${res.status}: ${url}`)
+  const buf = await res.arrayBuffer()
+  const fs = await import('fs/promises')
+  await fs.writeFile(destPath, Buffer.from(buf))
+  logger?.info({ url, size: buf.byteLength }, 'Downloaded XLSX')
 }
 
-async function fetchFromIMPIC(logger) {
-  const url = `${IMPIC_API_URL}/contratos?items=100&page=0`
-  const res = await fetch(url, { headers: HEADERS })
-  if (!res.ok) throw new Error(`IMPIC API HTTP ${res.status}`)
-  return res.json()
+// ── Excel date serial → ISO string ────────────────────────────────────────────
+
+function excelSerialToDate(serial) {
+  if (!serial || serial === 'NULL' || serial === '') return null
+  const n = Number(serial)
+  if (isNaN(n) || n === 0) return null
+  // Excel epoch is 1900-01-01 (but Excel has a leap-year bug treating 1900 as leap)
+  const d = new Date(Date.UTC(1899, 11, 30 + n))
+  return d.toISOString().split('T')[0]
 }
 
-async function fetchLegacy(page = 0) {
-  const url = `${LEGACY_URL}?type=ajuste&query={}&items=25&page=${page}`
-  const res = await fetch(url, { headers: HEADERS })
-  if (!res.ok) throw new Error(`Legacy HTTP ${res.status}`)
-  const text = await res.text()
-  // Legacy endpoint may return HTML — try JSON parse, bail out if fails
-  try {
-    return JSON.parse(text)
-  } catch {
-    return null
+// ── Column indices (0-based) in the XLSX sheet ───────────────────────────────
+// Headers: ["idcontrato","nAnuncio","TipoAnuncio","idINCM","tipoContrato",
+//           "idprocedimento","tipoprocedimento","objectoContrato","descContrato",
+//           "adjudicante","adjudicatarios","dataPublicacao","dataCelebracaoContrato",
+//           "precoContratual","CPV","prazoExecucao","LocalExecucao","fundamentacao",
+//           ...]
+
+const COL = {
+  idcontrato:       0,
+  objectoContrato:  7,
+  descContrato:     8,
+  adjudicante:      9,
+  adjudicatarios:  10,
+  dataPublicacao:  11,
+  precoContratual: 13,
+  tipoContrato:     4,
+  tipoprocedimento: 6,
+  LocalExecucao:   17,
+  CPV:             14,
+  fundamentacao:   18,
+  Ano:             34,
+}
+
+function normaliseContract(row, year) {
+  // Use idcontrato as primary key; fallback to nAnuncio if missing
+  const id = String(row[COL.idcontrato] || row[1] || `unknown-${Date.now()}`)
+  const desc1 = String(row[COL.objectoContrato] || '')
+  const desc2 = String(row[COL.descContrato] || '')
+  const description = desc1 || desc2
+
+  // adjudicatarios may be multi-line (joined with \r\n)
+  const awardedRaw = String(row[COL.adjudicatarios] || '').split('\r\n')[0].trim()
+
+  // precoContratual may be a number or string like "46007" (cents?) or "1127879.04"
+  let value = 0
+  const priceRaw = row[COL.precoContratual]
+  if (priceRaw !== undefined && priceRaw !== '' && priceRaw !== 'NULL') {
+    const parsed = parseFloat(String(priceRaw).replace(',', '.').replace(/[^\d.]/g, ''))
+    if (!isNaN(parsed)) {
+      // If value looks like cents (< 1000 and year is recent), assume euros already
+      value = parsed
+    }
   }
-}
 
-function normalise(raw, type = 'unknown') {
+  const date = excelSerialToDate(row[COL.dataPublicacao])
+
   return {
-    id: String(raw.id || raw.nBase || raw.nIPC || `${type}-${Date.now()}-${Math.random()}`),
-    description: raw.descricao || raw.description || raw.objectoContrato || raw.titulo || '',
-    contractingEntity: raw.entidadeAdjudicante || raw.entidade || raw.adjudicante || '',
-    awarded: raw.adjudicatario || raw.entidadeAdjudicada || raw.adjudicataria || '',
-    value: parseFloat(String(raw.precoContratual || raw.valor || raw.amount || '0').replace(',', '.').replace(/[^\d.]/g, '')) || 0,
-    date: raw.dataPublicacao || raw.dataPublicacaoContrato || raw.data || null,
-    type: type,
-    synced_at: new Date(),
+    id:                id,
+    description:       description,
+    contractingEntity: String(row[COL.adjudicante] || '').split('\r\n')[0].trim(),
+    awarded:           awardedRaw,
+    value:             value,
+    date:              date,
+    type:              String(row[COL.tipoprocedimento] || row[COL.tipoContrato] || 'unknown'),
+    ano:               year || Number(row[COL.Ano]) || null,
+    local:             String(row[COL.LocalExecucao] || ''),
+    cpv:               String(row[COL.CPV] || ''),
+    fundamentacao:     String(row[COL.fundamentacao] || ''),
+    nAnuncio:          String(row[1] || ''),
+    synced_at:         new Date(),
   }
 }
+
+// ── Sync one year XLSX ────────────────────────────────────────────────────────
+
+async function syncYear(year, xlsxPath, logger, batchSize = 500) {
+  const xlsxMod = await import('xlsx')
+  const XLSX = xlsxMod.default
+  const wb = XLSX.readFile(xlsxPath)
+  const ws = wb.Sheets[wb.SheetNames[0]]
+  const raw = XLSX.utils.sheet_to_json(ws, { header: 1, defval: '' })
+
+  if (raw.length < 2) {
+    logger?.warn({ year }, 'XLSX empty or header-only, skipping')
+    return 0
+  }
+
+  const header = raw[0]
+  logger?.info({ year, rows: raw.length - 1, headerLen: header.length }, 'Processing XLSX')
+
+  // Build column index map from actual header row (case-insensitive)
+  const colMap = {}
+  header.forEach((h, i) => { colMap[String(h).toLowerCase()] = i })
+
+  const getCol = (name) => colMap[name] ?? COL[name] ?? -1
+
+  // Remap column indices based on actual header
+  const actualCol = {
+    idcontrato:       getCol('idcontrato'),
+    objectoContrato:  getCol('objectocontarto') || getCol('objectocontato') || getCol('objectocontarto'),
+    descContrato:      getCol('desccontrato'),
+    adjudicante:       getCol('adjudicante'),
+    adjudicatarios:    getCol('adjudicatarios'),
+    dataPublicacao:    getCol('datapublicacao'),
+    precoContratual:   getCol('precocontratual'),
+    tipoContrato:      getCol('tipocontrato'),
+    tipoprocedimento:  getCol('tipoprocedimento'),
+    LocalExecucao:     getCol('localexecucao'),
+    CPV:               getCol('cpv'),
+    fundamentacao:     getCol('fundamentacao'),
+    Ano:               getCol('ano'),
+  }
+
+  let total = 0
+  const rows = raw.slice(1)
+
+  for (let i = 0; i < rows.length; i += batchSize) {
+    const batch = rows.slice(i, i + batchSize)
+    const ops = batch.map(row => {
+      // Build a "virtual row" object using actual column indices
+      const virtualRow = [
+        actualCol.idcontrato >= 0 ? row[actualCol.idcontrato] : '',
+        actualCol.tipoprocedimento >= 0 ? row[actualCol.tipoprocedimento] : '',
+        actualCol.tipoContrato >= 0 ? row[actualCol.tipoContrato] : '',
+        actualCol.objectoContrato >= 0 ? row[actualCol.objectoContrato] : '',
+        actualCol.descContrato >= 0 ? row[actualCol.descContrato] : '',
+        actualCol.adjudicante >= 0 ? row[actualCol.adjudicante] : '',
+        actualCol.adjudicatarios >= 0 ? row[actualCol.adjudicatarios] : '',
+        actualCol.dataPublicacao >= 0 ? row[actualCol.dataPublicacao] : '',
+        actualCol.precoContratual >= 0 ? row[actualCol.precoContratual] : '',
+        actualCol.LocalExecucao >= 0 ? row[actualCol.LocalExecucao] : '',
+        actualCol.CPV >= 0 ? row[actualCol.CPV] : '',
+        actualCol.fundamentacao >= 0 ? row[actualCol.fundamentacao] : '',
+        actualCol.Ano >= 0 ? row[actualCol.Ano] : year,
+      ]
+
+      // Override idcontrato (index 0) and adjudicante-adjudicatarios indices in virtual row
+      // We'll just pass the original row and let normaliseContract use col indices
+      const doc = normaliseContract(row, year)
+      // Use the id from the row
+      const idIdx = actualCol.idcontrato
+      if (idIdx >= 0) doc.id = String(row[idIdx] || doc.id)
+      const adjIdx = actualCol.adjudicante
+      if (adjIdx >= 0) doc.contractingEntity = String(row[adjIdx] || '').split('\r\n')[0].trim()
+      const awaIdx = actualCol.adjudicatarios
+      if (awaIdx >= 0) {
+        const aw = String(row[awaIdx] || '').split('\r\n')[0].trim()
+        doc.awarded = aw
+      }
+      const objIdx = actualCol.objectoContrato
+      if (objIdx >= 0) doc.description = String(row[objIdx] || '')
+      const dscIdx = actualCol.descContrato
+      if (dscIdx >= 0 && !doc.description) doc.description = String(row[dscIdx] || '')
+      const dtIdx = actualCol.dataPublicacao
+      if (dtIdx >= 0) doc.date = excelSerialToDate(row[dtIdx])
+      const prcIdx = actualCol.precoContratual
+      if (prcIdx >= 0) {
+        const priceRaw = row[prcIdx]
+        if (priceRaw !== undefined && priceRaw !== '' && priceRaw !== 'NULL') {
+          const parsed = parseFloat(String(priceRaw).replace(',', '.').replace(/[^\d.]/g, ''))
+          if (!isNaN(parsed)) doc.value = parsed
+        }
+      }
+      const locIdx = actualCol.LocalExecucao
+      if (locIdx >= 0) doc.local = String(row[locIdx] || '')
+      const cpvIdx = actualCol.CPV
+      if (cpvIdx >= 0) doc.cpv = String(row[cpvIdx] || '')
+      const fundIdx = actualCol.fundamentacao
+      if (fundIdx >= 0) doc.fundamentacao = String(row[fundIdx] || '')
+      const tipIdx = actualCol.tipoprocedimento
+      if (tipIdx >= 0) doc.type = String(row[tipIdx] || '')
+      else {
+        const tcIdx = actualCol.tipoContrato
+        if (tcIdx >= 0) doc.type = String(row[tcIdx] || '')
+      }
+
+      return {
+        updateOne: {
+          filter: { id: doc.id },
+          update: { $set: doc },
+          upsert: true,
+        }
+      }
+    })
+
+    await Contract.bulkWrite(ops, { ordered: false })
+    total += ops.length
+    logger?.info({ year, synced: total, batch: `${i + batchSize}/${rows.length}` }, 'Batch upserted')
+  }
+
+  return total
+}
+
+// ── Main sync ─────────────────────────────────────────────────────────────────
 
 export async function syncContracts(logger) {
-  let total = 0
+  const fs = await import('fs/promises')
+  const os = await import('os')
+  const path = await import('path')
 
-  // ── Method 1: Official IMPIC API ──────────────────────────────────────────
-  if (API_KEY) {
-    logger?.info('Using official IMPIC API')
+  const tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), 'base-contracts-'))
+
+  // Years to sync — start with 2026 only for speed, then all
+  const YEARS = [2026, 2025, 2024, 2023, 2022, 2021, 2020, 2019, 2018, 2017, 2016, 2015, 2014, 2013, 2012]
+  let grandTotal = 0
+  let errors = []
+
+  for (const year of YEARS) {
+    logger?.info({ year }, 'Fetching resource URL for year')
+    let xlsxUrl
     try {
-      const data = await fetchFromIMPIC(logger)
-      const items = data.items || data.resultado || data.results || data.data || []
-
-      for (const raw of items) {
-        const doc = normalise(raw, raw.tipoProcedimento || 'impic')
-        await Contract.findOneAndUpdate(
-          { id: doc.id },
-          doc,
-          { upsert: true, new: true }
-        )
-        total++
-      }
-
-      logger?.info({ total }, 'IMPIC API sync complete')
-      return { source: 'impic', synced: total }
+      xlsxUrl = await getResourceUrls(year)
     } catch (err) {
-      logger?.error({ err }, 'IMPIC API sync failed, falling back to legacy')
+      logger?.error({ err, year }, 'Failed to get resource URL')
+      errors.push({ year, error: err.message })
+      continue
+    }
+
+    if (!xlsxUrl) {
+      logger?.warn({ year }, 'No XLSX resource found for year, skipping')
+      continue
+    }
+
+    const destPath = path.join(tmpDir, `contratos${year}.xlsx`)
+    try {
+      await downloadFile(xlsxUrl, destPath, logger)
+      const count = await syncYear(year, destPath, logger)
+      grandTotal += count
+      logger?.info({ year, count }, 'Year sync complete')
+    } catch (err) {
+      logger?.error({ err, year }, 'Failed to sync year')
+      errors.push({ year, error: err.message })
     }
   }
 
-  // ── Method 2: Legacy endpoint (deprecated) ────────────────────────────────
-  logger?.warn('Legacy BASE API has no guaranteed JSON response — sync may yield 0 documents. Register for IMPIC API at https://www.impic.pt/support/open.php')
+  // Cleanup
+  await fs.rm(tmpDir, { recursive: true }).catch(() => {})
 
-  const TYPES = ['ajuste', 'concurso']
-  const PAGES_PER_SYNC = 4
-
-  for (const type of TYPES) {
-    for (let page = 0; page < PAGES_PER_SYNC; page++) {
-      try {
-        const data = await fetchLegacy(page)
-        if (!data) {
-          logger?.warn({ type, page }, 'Legacy endpoint returned HTML, skipping')
-          break
-        }
-
-        const items = data.items || data.resultado || data.results || (Array.isArray(data) ? data : [])
-        if (!items.length) break
-
-        for (const raw of items) {
-          const doc = normalise(raw, type)
-          await Contract.findOneAndUpdate(
-            { id: doc.id },
-            doc,
-            { upsert: true, new: true }
-          )
-          total++
-        }
-
-        logger?.info(`Synced ${items.length} contracts (type=${type}, page=${page})`)
-        if (items.length < 25) break
-      } catch (err) {
-        logger?.error({ err, type, page }, 'Failed to sync BASE contracts page')
-        break
-      }
-    }
-  }
-
-  return { source: API_KEY ? 'impic' : 'legacy', synced: total }
+  logger?.info({ grandTotal, errors }, 'Full sync complete')
+  return { source: 'dados.gov.pt', synced: grandTotal, errors }
 }
