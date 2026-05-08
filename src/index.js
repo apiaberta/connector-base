@@ -25,8 +25,8 @@ await app.register(swagger, {
   openapi: {
     info: {
       title: 'API Aberta - BASE Connector',
-      description: 'Portuguese public contracts from BASE.gov.pt. NOTE: The official IMPIC API requires registration. Set BASE_API_KEY env var to enable live sync.',
-      version: '1.0.0',
+      description: 'Portuguese public contracts from BASE.gov.pt via dados.gov.pt XLSX (public domain). No API key required.',
+      version: '1.1.0',
     },
     servers: [{ url: `http://localhost:${PORT}` }],
     tags: [
@@ -83,11 +83,19 @@ cron.schedule('0 3 * * *', async () => {
 await mongoose.connect(MONGO_URI)
 app.log.info('Connected to MongoDB')
 
-// Initial sync on startup
-app.log.info('Running initial BASE contracts sync...')
-syncContracts(app.log)
-  .then(r => app.log.info({ r }, 'Initial contracts sync done'))
-  .catch(err => app.log.error({ err }, 'Initial contracts sync failed'))
-
+// Start HTTP server FIRST so health checks are responsive immediately
 await app.listen({ port: PORT, host: '0.0.0.0' })
 app.log.info(`${SERVICE_NAME} listening on port ${PORT}`)
+
+// Then sync in background — non-blocking for HTTP
+// Only run initial sync if MongoDB collection is empty (first run)
+const { Contract } = await import('./models/contract.js')
+const count = await Contract.countDocuments()
+if (count === 0) {
+  app.log.info('Collection empty — running initial sync...')
+  syncContracts(app.log)
+    .then(r => app.log.info({ r }, 'Initial contracts sync done'))
+    .catch(err => app.log.error({ err }, 'Initial contracts sync failed'))
+} else {
+  app.log.info({ count }, 'Collection already has data — skipping initial sync (cron at 03:00 will update)')
+}

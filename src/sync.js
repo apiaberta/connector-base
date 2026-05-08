@@ -230,6 +230,8 @@ async function syncYear(year, xlsxPath, logger, batchSize = 500) {
     await Contract.bulkWrite(ops, { ordered: false })
     total += ops.length
     logger?.info({ year, synced: total, batch: `${i + batchSize}/${rows.length}` }, 'Batch upserted')
+    // Yield event loop between batches so HTTP requests remain responsive
+    await new Promise(r => setImmediate(r))
   }
 
   return total
@@ -250,6 +252,8 @@ export async function syncContracts(logger) {
   let errors = []
 
   for (const year of YEARS) {
+    // Yield between years so HTTP requests can be handled
+    await new Promise(r => setImmediate(r))
     logger?.info({ year }, 'Fetching resource URL for year')
     let xlsxUrl
     try {
