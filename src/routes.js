@@ -12,19 +12,21 @@ export async function baseRoutes(app) {
         properties: {
           page:  { type: 'integer', default: 1, minimum: 1 },
           limit: { type: 'integer', default: 25, minimum: 1, maximum: 100 },
-          type:  { type: 'string', description: 'Contract type (ajuste, concurso)' }
+          type:  { type: 'string', description: 'Contract type (ajuste, concurso)' },
+          year:  { type: 'integer', description: 'Filter by year (e.g. 2025)' }
         }
       }
     }
   }, async (req) => {
-    const { page = 1, limit = 25, type } = req.query
+    const { page = 1, limit = 25, type, year } = req.query
     const skip = (page - 1) * limit
 
     const query = {}
     if (type) query.type = type
+    if (year) query.date = { $regex: `^${year}-` }
 
     const [contracts, total] = await Promise.all([
-      Contract.find(query).sort({ synced_at: -1 }).skip(skip).limit(limit).lean(),
+      Contract.find(query).sort({ date: -1 }).skip(skip).limit(limit).lean(),
       Contract.countDocuments(query)
     ])
 
