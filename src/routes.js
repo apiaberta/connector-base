@@ -2,6 +2,52 @@ import { Contract } from './models/contract.js'
 
 export async function baseRoutes(app) {
 
+  // GET /base — recent contracts, paginated (main entry point)
+  app.get('/base', {
+    schema: {
+      description: 'Recent public contracts from BASE.gov.pt',
+      tags: ['Contracts'],
+      querystring: {
+        type: 'object',
+        properties: {
+          page:  { type: 'integer', default: 1, minimum: 1 },
+          limit: { type: 'integer', default: 25, minimum: 1, maximum: 100 },
+          type:  { type: 'string', description: 'Contract type (ajuste, concurso)' },
+          year:  { type: 'integer', description: 'Filter by year (e.g. 2025)' }
+        }
+      }
+    }
+  }, async (req) => {
+    const { page = 1, limit = 25, type, year } = req.query
+    const skip = (page - 1) * limit
+
+    const query = {}
+    if (type) query.type = type
+    if (year) query.date = { $regex: `^${year}-` }
+
+    const [contracts, total] = await Promise.all([
+      Contract.find(query).sort({ date: -1 }).skip(skip).limit(limit).lean(),
+      Contract.countDocuments(query)
+    ])
+
+    return {
+      total,
+      page,
+      limit,
+      pages: Math.ceil(total / limit),
+      data:  contracts.map(c => ({
+        id:                c.id,
+        description:       c.description,
+        contractingEntity: c.contractingEntity,
+        awarded:           c.awarded,
+        value:             c.value,
+        date:              c.date,
+        type:              c.type,
+        synced_at:         c.synced_at
+      }))
+    }
+  })
+
   // GET /contracts — recent contracts, paginated
   app.get('/contracts', {
     schema: {
