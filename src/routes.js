@@ -2,8 +2,8 @@ import { Contract } from './models/contract.js'
 
 export async function baseRoutes(app) {
 
-  // GET /base — recent contracts, paginated (main entry point)
-  app.get('/base', {
+  // GET / (under /base prefix) — recent contracts, paginated (main entry point)
+  app.get('/', {
     schema: {
       description: 'Recent public contracts from BASE.gov.pt',
       tags: ['Contracts'],
