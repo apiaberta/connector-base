@@ -17,7 +17,13 @@ import { Contract } from './models/contract.js'
 
 const DATASET_ID = '66d72d488ca4b7cb2de28712'
 
+// Known years where XLSX is unavailable (404 from dados.gov.pt)
+const UNAVAILABLE_YEARS = new Set([2019, 2020])
+
 async function getResourceUrls(year) {
+  if (UNAVAILABLE_YEARS.has(year)) {
+    return null // Known unavailable, skip without API call
+  }
   const url = `https://dados.gov.pt/api/1/datasets/${DATASET_ID}/`
   const res = await fetch(url)
   if (!res.ok) throw new Error(`dados.gov.pt API HTTP ${res.status}`)
@@ -239,22 +245,54 @@ async function syncYear(year, xlsxPath, logger, batchSize = 500) {
 
 // ── Main sync ─────────────────────────────────────────────────────────────────
 
-export async function syncContracts(logger) {
+/**
+ * Sync contracts from dados.gov.pt XLSX files.
+ *
+ * @param {object} logger - Logger instance
+ * @param {'incremental'|'backfill'} mode
+ *   'incremental' — only current year (for cron)
+ *   'backfill'   — current year + one missing historical year (for initial/background fill)
+ */
+export async function syncContracts(logger, mode = 'backfill') {
   const fs = await import('fs/promises')
   const os = await import('os')
   const path = await import('path')
 
   const tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), 'base-contracts-'))
 
-  // Years to sync — start with 2026 only for speed, then all
-  const YEARS = [2026, 2025, 2024, 2023, 2022, 2021, 2020, 2019, 2018, 2017, 2016, 2015, 2014, 2013, 2012]
+  // Determine which years to sync based on mode:
+  // - cron (incremental): only current year
+  // - initial/backfill (full=false): current year + one historical year to gradually fill
+  // Skip years we know are unavailable (404 from dados.gov.pt)
+  const currentYear = new Date().getFullYear()
+  const yearsToSync = []
+
+  if (mode === 'incremental') {
+    // Cron mode: just the current year
+    if (!UNAVAILABLE_YEARS.has(currentYear)) {
+      yearsToSync.push(currentYear)
+    }
+  } else {
+    // Backfill mode: current year + one most-recent missing year
+    yearsToSync.push(currentYear)
+    for (let y = currentYear - 1; y >= 2012; y--) {
+      if (UNAVAILABLE_YEARS.has(y)) continue
+      // Check if this year exists in DB already
+      const existing = await Contract.countDocuments({ ano: y })
+      if (existing === 0) {
+        yearsToSync.push(y)
+        break // only one historical year per backfill run
+      }
+    }
+  }
+
   let grandTotal = 0
   let errors = []
 
-  for (const year of YEARS) {
+  for (const year of yearsToSync) {
     // Yield between years so HTTP requests can be handled
     await new Promise(r => setImmediate(r))
-    logger?.info({ year }, 'Fetching resource URL for year')
+    logger?.info({ year, mode }, 'Fetching resource URL for year')
     let xlsxUrl
     try {
       xlsxUrl = await getResourceUrls(year)
@@ -265,7 +303,7 @@ export async function syncContracts(logger) {
     }
 
     if (!xlsxUrl) {
-      logger?.warn({ year }, 'No XLSX resource found for year, skipping')
+      logger?.warn({ year }, 'No XLSX resource found for year (likely unavailable), skipping')
       continue
     }
 
@@ -284,6 +322,6 @@ export async function syncContracts(logger) {
   // Cleanup
   await fs.rm(tmpDir, { recursive: true }).catch(() => {})
 
-  logger?.info({ grandTotal, errors }, 'Full sync complete')
-  return { source: 'dados.gov.pt', synced: grandTotal, errors }
+  logger?.info({ grandTotal, yearsToSync, errors }, 'Sync complete')
+  return { source: 'dados.gov.pt', synced: grandTotal, years: yearsToSync, errors }
 }

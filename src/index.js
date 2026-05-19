@@ -66,16 +66,14 @@ app.get('/base/health', async () => ({
 await app.register(metaRoutes)
 await app.register(baseRoutes, { prefix: '/base' })
 
-// ─── Cron: sync daily at 03:00 ───────────────────────────────────────────────
+// ─── Cron: sync daily at 03:00 (incremental — current year only) ───────────
 
 cron.schedule('0 3 * * *', async () => {
-  app.log.info('Cron: syncing BASE.gov.pt contracts...')
-  try {
-    const r = await syncContracts(app.log)
-    app.log.info({ r }, 'Contracts sync complete')
-  } catch (err) {
-    app.log.error({ err }, 'Contracts sync failed')
-  }
+  app.log.info('Cron: syncing BASE.gov.pt contracts (incremental)...')
+  // Run sync in background — non-blocking, fire-and-forget
+  syncContracts(app.log, 'incremental')
+    .then(r => app.log.info({ r }, 'Cron contracts sync complete'))
+    .catch(err => app.log.error({ err }, 'Cron contracts sync failed'))
 }, { timezone: 'Europe/Lisbon' })
 
 // ─── Startup ─────────────────────────────────────────────────────────────────
@@ -92,10 +90,10 @@ app.log.info(`${SERVICE_NAME} listening on port ${PORT}`)
 const { Contract } = await import('./models/contract.js')
 const count = await Contract.countDocuments()
 if (count === 0) {
-  app.log.info('Collection empty — running initial sync...')
-  syncContracts(app.log)
+  app.log.info('Collection empty — running initial backfill sync...')
+  syncContracts(app.log, 'backfill')
     .then(r => app.log.info({ r }, 'Initial contracts sync done'))
     .catch(err => app.log.error({ err }, 'Initial contracts sync failed'))
 } else {
-  app.log.info({ count }, 'Collection already has data — skipping initial sync (cron at 03:00 will update)')
+  app.log.info({ count }, 'Collection has data — skipping initial sync (cron at 03:00 will incrementally update)')
 }
