@@ -8,8 +8,9 @@ import { metaRoutes } from './meta.js'
 import { syncContracts } from './sync.js'
 
 const SERVICE_NAME = 'connector-base'
-const PORT      = parseInt(process.env.PORT || '3003')
-const MONGO_URI = process.env.MONGO_URI || 'mongodb://localhost:27017/apiaberta-base'
+const PORT        = parseInt(process.env.PORT || '3003')
+const MONGO_URI   = process.env.MONGO_URI || 'mongodb://localhost:27017/apiaberta-base'
+const BASE_API_KEY = process.env.BASE_API_KEY
 
 const app = Fastify({
   logger: {
@@ -25,7 +26,7 @@ await app.register(swagger, {
   openapi: {
     info: {
       title: 'API Aberta - BASE Connector',
-      description: 'Portuguese public contracts from BASE.gov.pt via dados.gov.pt XLSX (public domain). No API key required.',
+      description: 'Portuguese public contracts from BASE.gov.pt. dados.gov.pt XLSX (public domain) for bulk data, and official API (BASE_API_KEY) for live enrichment.',
       version: '1.1.0',
     },
     servers: [{ url: `http://localhost:${PORT}` }],
