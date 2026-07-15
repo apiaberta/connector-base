@@ -12,6 +12,70 @@
  */
 
 import { Contract } from './models/contract.js'
+import { Worker } from 'worker_threads'
+import path from 'path'
+
+// ── Safety guards ────────────────────────────────────────────────────────────
+//
+// Historical bug: a 33MB XLSX from dados.gov.pt caused `XLSX.readFile()` to
+// block the Node.js event-loop for days (synchronous C++ parse), freezing
+// the whole apiaberta VPS. Fix: parse in a worker_thread with a hard timeout,
+// and refuse to parse anything over XLSX_MAX_SIZE.
+const XLSX_MAX_SIZE = 30 * 1024 * 1024        // 30 MB hard cap
+const XLSX_PARSE_TIMEOUT_MS = 5 * 60 * 1000  // 5 min — cron retries tomorrow
+
+/**
+ * Run XLSX.readFile() inside a worker_thread so the synchronous C++ parse
+ * can NEVER block the main event-loop. Hard timeout via worker.terminate().
+ */
+function parseXLSXInWorker(filePath, logger) {
+  return new Promise((resolve, reject) => {
+    // Inline worker code (eval mode) — no separate .js file needed.
+    // xlsx is CommonJS; safe to require() inside the worker.
+    const code = `
+      const { parentPort, workerData } = require('worker_threads')
+      try {
+        const xlsx = require('xlsx')
+        const wb = xlsx.readFile(workerData.filePath)
+        const sheetName = wb.SheetNames[0]
+        const ws = wb.Sheets[sheetName]
+        const raw = xlsx.utils.sheet_to_json(ws, { header: 1, defval: '' })
+        parentPort.postMessage({ ok: true, raw, sheetName })
+      } catch (err) {
+        parentPort.postMessage({ ok: false, error: err.message, stack: err.stack })
+      }
+    `
+    const worker = new Worker(code, { eval: true, workerData: { filePath } })
+    let settled = false
+
+    const timer = setTimeout(() => {
+      if (settled) return
+      settled = true
+      worker.terminate().catch(() => {})
+      logger?.error(
+        { filePath, timeoutMs: XLSX_PARSE_TIMEOUT_MS },
+        'XLSX parse timeout — worker terminated'
+      )
+      reject(new Error(`XLSX parse timeout after ${XLSX_PARSE_TIMEOUT_MS}ms`))
+    }, XLSX_PARSE_TIMEOUT_MS)
+
+    worker.on('message', (msg) => {
+      if (settled) return
+      settled = true
+      clearTimeout(timer)
+      worker.terminate().catch(() => {})
+      if (msg.ok) resolve(msg)
+      else reject(new Error(`XLSX parse worker error: ${msg.error}`))
+    })
+
+    worker.on('error', (err) => {
+      if (settled) return
+      settled = true
+      clearTimeout(timer)
+      reject(err)
+    })
+  })
+}
 
 // ── dados.gov.pt API ──────────────────────────────────────────────────────────
 
@@ -123,12 +187,39 @@ function normaliseContract(row, year) {
 
 // ── Sync one year XLSX ────────────────────────────────────────────────────────
 
+/**
+ * Sync one year XLSX. Pre-flight size check + worker-thread parse so a
+ * maliciously large XLSX can never freeze the main process again.
+ */
 async function syncYear(year, xlsxPath, logger, batchSize = 500) {
-  const xlsxMod = await import('xlsx')
-  const XLSX = xlsxMod.default
-  const wb = XLSX.readFile(xlsxPath)
-  const ws = wb.Sheets[wb.SheetNames[0]]
-  const raw = XLSX.utils.sheet_to_json(ws, { header: 1, defval: '' })
+  // ── Pre-flight size guard (cheap, runs in main thread) ──
+  const fs = await import('fs/promises')
+  const stat = await fs.stat(xlsxPath).catch(() => null)
+  const size = stat?.size ?? 0
+  if (size === 0) {
+    logger?.error({ year, xlsxPath }, 'XLSX file missing or empty, skipping')
+    return 0
+  }
+  if (size > XLSX_MAX_SIZE) {
+    logger?.error(
+      {
+        year,
+        xlsxPath,
+        sizeMB: +(size / 1024 / 1024).toFixed(1),
+        capMB: XLSX_MAX_SIZE / 1024 / 1024,
+      },
+      'XLSX exceeds size cap — SKIPPING (would block event-loop). Cron will retry tomorrow.'
+    )
+    return 0
+  }
+  logger?.info(
+    { year, sizeMB: +(size / 1024 / 1024).toFixed(2) },
+    'Parsing XLSX in worker thread'
+  )
+
+  // ── Worker-thread parse with hard timeout ──
+  const { raw } = await parseXLSXInWorker(xlsxPath, logger)
+  logger?.info({ year, rows: raw.length }, 'XLSX parsed by worker')
 
   if (raw.length < 2) {
     logger?.warn({ year }, 'XLSX empty or header-only, skipping')
@@ -256,7 +347,6 @@ async function syncYear(year, xlsxPath, logger, batchSize = 500) {
 export async function syncContracts(logger, mode = 'backfill') {
   const fs = await import('fs/promises')
   const os = await import('os')
-  const path = await import('path')
 
   const tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), 'base-contracts-'))
 
