@@ -1,3 +1,5 @@
+import { existsSync } from 'node:fs'
+import { resolve } from 'node:path'
 import Fastify from 'fastify'
 import mongoose from 'mongoose'
 import cron from 'node-cron'
@@ -7,10 +9,16 @@ import { baseRoutes } from './routes.js'
 import { metaRoutes } from './meta.js'
 import { syncContracts } from './sync.js'
 
+const envPath = resolve(process.cwd(), '.env')
+if (existsSync(envPath)) {
+  process.loadEnvFile(envPath)
+}
+
 const SERVICE_NAME = 'connector-base'
 const PORT        = parseInt(process.env.PORT || '3003')
 const MONGO_URI   = process.env.MONGO_URI || 'mongodb://localhost:27017/apiaberta-base'
-const BASE_API_KEY = process.env.BASE_API_KEY
+const BASE_API_KEY = process.env.BASE_API_KEY?.trim() || ''
+const officialApiEnabled = Boolean(BASE_API_KEY)
 
 const app = Fastify({
   logger: {
@@ -68,6 +76,12 @@ await app.register(metaRoutes)
 await app.register(baseRoutes, { prefix: '/base' })
 
 // ─── Cron: sync daily at 03:00 (incremental — current year only) ───────────
+
+if (!officialApiEnabled) {
+  app.log.warn(
+    'BASE_API_KEY is not set. Official BASE.gov.pt API enrichment is disabled. Set BASE_API_KEY in .env (see .env.example). dados.gov.pt XLSX sync still runs.'
+  )
+}
 
 cron.schedule('0 3 * * *', async () => {
   app.log.info('Cron: syncing BASE.gov.pt contracts (incremental)...')

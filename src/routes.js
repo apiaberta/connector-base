@@ -201,12 +201,13 @@ export async function baseRoutes(app) {
     const { id } = req.params
     const BASE_URL = 'https://www.base.gov.pt/APIBase2'
 
-    // Try official API first
-    if (process.env.BASE_API_KEY) {
+    // Official API only when BASE_API_KEY is set in the environment
+    const baseApiKey = process.env.BASE_API_KEY?.trim()
+    if (baseApiKey) {
       try {
         const res = await fetch(
           `${BASE_URL}/GetInfoContrato?idContrato=${encodeURIComponent(id)}`,
-          { headers: { '_AcessToken': process.env.BASE_API_KEY } }
+          { headers: { '_AcessToken': baseApiKey } }
         )
         if (res.ok) {
           const [data] = await res.json()

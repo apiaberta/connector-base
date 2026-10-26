@@ -6,8 +6,8 @@ module.exports = {
       env: {
         NODE_ENV: 'production',
         PORT: 3003,
-        MONGO_URI: 'mongodb://localhost:27017/apiaberta-base',
-        BASE_API_KEY: process.env.BASE_API_KEY || '0NvKOmsxNoYCATbYNWgz'
+        MONGO_URI: process.env.MONGO_URI || 'mongodb://localhost:27017/apiaberta-base'
+        // BASE_API_KEY is read from process.env / .env only — never hardcode secrets here
       },
       watch: false,
       autorestart: true,
