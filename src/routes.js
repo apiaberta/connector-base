@@ -1,4 +1,5 @@
 import { Contract } from './models/contract.js'
+import { fetchBase } from './baseClient.js'
 
 // DD/MM/YYYY → YYYY-MM-DD
 function normalizeDate(d) {
@@ -203,11 +204,14 @@ export async function baseRoutes(app) {
 
     // Official API only when BASE_API_KEY is set in the environment
     const baseApiKey = process.env.BASE_API_KEY?.trim()
-    if (baseApiKey) {
+    if (!baseApiKey) {
+      req.log.warn({ id }, 'BASE_API_KEY is not set; official API enrichment skipped, falling back to cached XLSX/MongoDB data')
+    } else {
       try {
-        const res = await fetch(
+        const res = await fetchBase(
           `${BASE_URL}/GetInfoContrato?idContrato=${encodeURIComponent(id)}`,
-          { headers: { '_AcessToken': baseApiKey } }
+          { headers: { '_AcessToken': baseApiKey } },
+          req.log
         )
         if (res.ok) {
           const [data] = await res.json()
@@ -249,9 +253,12 @@ export async function baseRoutes(app) {
               year:             data.Ano || null,
             }
           }
+          req.log.warn({ id, status: res.status }, 'BASE official API returned no contract; falling back to cached XLSX/MongoDB data')
+        } else {
+          req.log.warn({ id, status: res.status }, 'BASE official API HTTP error; falling back to cached XLSX/MongoDB data')
         }
       } catch (err) {
-        req.log.warn({ err, id }, 'BASE official API lookup failed, falling back to MongoDB')
+        req.log.warn({ err, id }, 'BASE official API lookup failed; falling back to cached XLSX/MongoDB data')
       }
     }
 

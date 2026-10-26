@@ -45,6 +45,8 @@ To get API access:
 Set BASE_API_KEY in .env to enable live official-API lookup.
 Without it, official BASE.gov.pt API enrichment is disabled; bulk sync still uses public dados.gov.pt XLSX files.
 
+www.base.gov.pt serves an incomplete TLS chain. The client adds the bundled intermediate in `certs/base-gov-intermediate.pem` to the system roots (verification stays on). Check a live call with `npm run check:base`.
+
 ## Sync
 
 Data syncs daily at 03:00 Europe/Lisbon. Initial sync runs on startup.

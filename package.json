@@ -5,7 +5,8 @@
   "type": "module",
   "scripts": {
     "dev": "node --watch src/index.js",
-    "start": "node src/index.js"
+    "start": "node src/index.js",
+    "check:base": "node scripts/check-base.js"
   },
   "dependencies": {
     "@fastify/swagger": "^9.0.0",
