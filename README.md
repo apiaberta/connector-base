@@ -24,14 +24,14 @@ Portuguese public procurement data from BASE.gov.pt.
 
 npm install
 cp .env.example .env
-Set BASE_API_KEY if you have IMPIC API access
+Set BASE_API_KEY in .env if you have IMPIC API access (never commit the key)
 npm start
 
 ## Environment
 
 PORT: 3003
 MONGO_URI: mongodb://localhost:27017/apiaberta-base
-BASE_API_KEY: (optional) Official IMPIC API key
+BASE_API_KEY: Official IMPIC API key, read only from process.env / .env. Leave empty to disable official API enrichment.
 
 ## Data Source
 
@@ -42,8 +42,10 @@ To get API access:
 2. Select topic: Contratos Publicos / Pedido de acesso a API Portal Base
 3. Wait for approval
 
-Set your API key in BASE_API_KEY env var to enable live sync.
-Without an API key, the connector uses a legacy endpoint that may return incomplete data.
+Set BASE_API_KEY in .env to enable live official-API lookup.
+Without it, official BASE.gov.pt API enrichment is disabled; bulk sync still uses public dados.gov.pt XLSX files.
+
+www.base.gov.pt serves an incomplete TLS chain. The client adds the bundled intermediate in `certs/base-gov-intermediate.pem` to the system roots (verification stays on). Check a live call with `npm run check:base`.
 
 ## Sync
 
