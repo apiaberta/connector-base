@@ -1,0 +1,108 @@
+{
+  "idcontrato": "12345",
+  "nAnuncio": "1234/2015",
+  "TipoAnuncio": "Anúncio de procedimento",
+  "idINCM": "123456789",
+  "tipoContrato": ["Empreitadas de obras públicas"],
+  "idprocedimento": "355455",
+  "tipoprocedimento": "Concurso público",
+  "objectoContrato": "Contrato de teste",
+  "descContrato": "Contrato de teste",
+  "adjudicante": [
+    {
+      "nifEntContrato": "501501501",
+      "descEntContrato": "Instituto de Teste, EPE",
+      "codPaisEntContrato": "PRT",
+      "NUTsCod": "PT16E",
+      "NUTsDesc": "Região de Coimbra",
+      "adjudicatarioPME": null,
+      "tipoEntidade": null,
+      "atividadeEntidade": null
+    }
+  ],
+  "adjudicatarios": [
+    {
+      "nifEntContrato": "500500500",
+      "descEntContrato": "Fornecedor de teste, S.A.",
+      "codPaisEntContrato": "PRT",
+      "NUTsCod": "PT11A",
+      "NUTsDesc": "Área Metropolitana do Porto",
+      "adjudicatarioPME": "Sim",
+      "tipoEntidade": null,
+      "atividadeEntidade": null
+    }
+  ],
+  "dataPublicacao": "2015-05-12",
+  "dataCelebracaoContrato": "2015-04-18",
+  "precoContratual": "105000.00",
+  "CPV": [
+    {
+      "cpvID": "45212410-3",
+      "cpvdescricao": "Obras de construção de edifícios relacionados com alojamento",
+      "cpvValor": 110000.00,
+      "CPVObjeto": "Principal"
+    }
+  ],
+  "prazoExecucao": 365,
+  "localExecucao": ["Portugal, Coimbra, Coimbra", "Portugal, Porto, Porto"],
+  "fundamentacao": "Artigo 19.º, alínea b) do Código dos Contratos Públicos",
+  "ProcedimentoCentralizado": "Não",
+  "numAcordoQuadro": "NULL",
+  "DescrAcordoQuadro": "NULL",
+  "precoBaseProcedimento": 110000.00,
+  "dataDecisaoAdjudicacao": "2015-03-15",
+  "dataFechoContrato": "",
+  "PrecoTotalEfetivo": "105000.00",
+  "regime": "Código dos Contratos Públicos (DL 18/2008)",
+  "justifNReducEscrContrato": [""],
+  "tipoFimContrato": "",
+  "CritMateriais": "Não",
+  "concorrentes": [
+    "500045698 - Empresa de Testes",
+    "500123698 - Outra Empresa de Testes"
+  ],
+  "linkPecasProc": "",
+  "Observacoes": "",
+  "ContratEcologico": "Não",
+  "Ano": 2015,
+  "fundamentAjusteDireto": "",
+  "NUTs": [
+    "PT192 - Região de Coimbra",
+    "PT11A - Área Metropolitana do Porto"
+  ],
+  "Lotes": [
+    {
+      "criterioLote": "Critérios ambientais",
+      "criterioAdjudicacaoPonderacao": 5.0,
+      "numLot": "1",
+      "designacaoLote": "Mesas",
+      "descricaoLote": null,
+      "criterioAdjudicacaoTipo": "Multifator",
+      "criterioAdjudicacaoTipoFator": "Outros",
+      "criterioAdjudicacaoFator": "Ponderação (percentagem, valor exato)",
+      "NumPropostas": 2
+    }
+  ],
+  "compraConjunta": "Não",
+  "TipoMEC": "",
+  "entidadesConvidadas": [
+    {
+      "NIPCEntidade": "500045698",
+      "Entidade": "Empresa de Testes",
+      "AliasPais": "PRT",
+      "Pais": "Portugal"
+    },
+    {
+      "NIPCEntidade": "500123698",
+      "Entidade": "Outra Empresa de Testes",
+      "AliasPais": "PRT",
+      "Pais": "Portugal"
+    }
+  ],
+  "CausasAlteraPrazo": "Não houve alteração ao prazo de execução da obra.",
+  "CausasAlteraPreco": "Não houve alteração ao valor da obra.",
+  "IDAnuncio": "432109",
+  "estadoContrato": "",
+  "precoEstimadoProc": 100000.0,
+  "ocorrencias": false
+}
