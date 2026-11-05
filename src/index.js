@@ -34,8 +34,8 @@ await app.register(swagger, {
   openapi: {
     info: {
       title: 'API Aberta - BASE Connector',
-      description: 'Portuguese public contracts from BASE.gov.pt. dados.gov.pt XLSX (public domain) for bulk data, and official API (BASE_API_KEY) for live enrichment.',
-      version: '1.1.0',
+      description: 'Portuguese public contracts from BASE.gov.pt. Bulk data from dados.gov.pt XLSX (public domain). Live enrichment via official APIBase2-V2 (BASE_API_KEY). The previous /APIBase2 endpoint is discontinued on 2026-12-04.',
+      version: '1.2.0',
     },
     servers: [{ url: `http://localhost:${PORT}` }],
     tags: [

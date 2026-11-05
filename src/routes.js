@@ -1,13 +1,6 @@
 import { Contract } from './models/contract.js'
 import { fetchBase } from './baseClient.js'
-
-// DD/MM/YYYY → YYYY-MM-DD
-function normalizeDate(d) {
-  if (!d) return null
-  const m = String(d).match(/^(\d{2})\/(\d{2})\/(\d{4})$/)
-  if (m) return `${m[3]}-${m[2]}-${m[1]}`
-  return String(d)
-}
+import { BASE_AUTH_HEADER, findContractRecord, mapOfficialContract, officialContractUrl } from './baseApi.js'
 
 export async function baseRoutes(app) {
 
@@ -188,7 +181,7 @@ export async function baseRoutes(app) {
   // Falls back to MongoDB if token not set or API unreachable
   app.get('/contracts/lookup/:id', {
     schema: {
-      description: 'Contract detail from official BASE.gov.pt API (live)',
+      description: 'Contract detail from official BASE.gov.pt APIBase2-V2 (live). V1 /APIBase2 is discontinued on 2026-12-04.',
       tags: ['Contracts'],
       params: {
         type: 'object',
@@ -200,7 +193,6 @@ export async function baseRoutes(app) {
     }
   }, async (req) => {
     const { id } = req.params
-    const BASE_URL = 'https://www.base.gov.pt/APIBase2'
 
     // Official API only when BASE_API_KEY is set in the environment
     const baseApiKey = process.env.BASE_API_KEY?.trim()
@@ -209,50 +201,13 @@ export async function baseRoutes(app) {
     } else {
       try {
         const res = await fetchBase(
-          `${BASE_URL}/GetInfoContrato?idContrato=${encodeURIComponent(id)}`,
-          { headers: { '_AcessToken': baseApiKey } },
+          officialContractUrl(id),
+          { headers: { [BASE_AUTH_HEADER]: baseApiKey } },
           req.log
         )
         if (res.ok) {
-          const [data] = await res.json()
-          if (data && data.idcontrato) {
-            return {
-              source:   'official',
-              id:       data.idcontrato,
-              description: data.objectoContrato || data.descContrato,
-              contractingEntity: (data.adjudicante || [])[0] || null,
-              awarded:  (data.adjudicatarios || [])[0] || null,
-              value:    typeof data.precoContratual === 'number' ? data.precoContratual
-                       : parseFloat(String(data.precoContratual || '0').replace(',', '.')) || null,
-              date:     normalizeDate(data.dataCelebracaoContrato),
-              type:     data.tipoprocedimento || null,
-              // ── Official API enrichment fields ──
-              announcementNumber: data.nAnuncio || null,
-              cpv:              data.cpv || null,
-              executionPlace:   data.localExecucao || null,
-              Nuts:             data.NUTs || null,
-              basePrice:        typeof data.precoBaseProcedimento === 'number' ? data.precoBaseProcedimento
-                               : parseFloat(String(data.precoBaseProcedimento || '0').replace(',', '.')) || null,
-              awardDate:        normalizeDate(data.dataDecisaoAdjudicacao),
-              competitors:      data.concorrentes || null,
-              contractCloseDate: normalizeDate(data.dataFechoContrato),
-              effectivePrice:   typeof data.PrecoTotalEfetivo === 'number' ? data.PrecoTotalEfetivo
-                               : parseFloat(String(data.PrecoTotalEfetivo || '0').replace(',', '.')) || null,
-              regime:           data.regime || null,
-              contractType:     (data.tipoContrato || [])[0] || null,
-              justificationDirect: data.fundamentAjusteDireto || null,
-              legalBasis:       data.fundamentacao || null,
-              awardCriterion:   data.TipoCriterioAdjudicacao || null,
-              publicationDate:  normalizeDate(data.dataPublicacao),
-              executionDays:    data.prazoExecucao || null,
-              frameworkAgreement: data.numAcordoQuadro || null,
-              isCentralized:    data.ProcedimentoCentralizado || null,
-              isEcological:     data.ContratEcologico || null,
-              isSmeSubcontract: data.adjudicatarioPMEs || null,
-              lots:             data.Lotes || null,
-              year:             data.Ano || null,
-            }
-          }
+          const mapped = mapOfficialContract(findContractRecord(await res.json(), id))
+          if (mapped) return mapped
           req.log.warn({ id, status: res.status }, 'BASE official API returned no contract; falling back to cached XLSX/MongoDB data')
         } else {
           req.log.warn({ id, status: res.status }, 'BASE official API HTTP error; falling back to cached XLSX/MongoDB data')
