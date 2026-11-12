@@ -1,6 +1,6 @@
 {
   "name": "apiaberta-base",
-  "version": "1.3.0",
+  "version": "1.4.0",
   "description": "Portuguese public contracts (BASE.gov.pt) connector for API Aberta",
   "type": "module",
   "scripts": {

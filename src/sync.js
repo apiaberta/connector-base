@@ -2,8 +2,9 @@
  * sync.js — BASE.gov.pt public contracts sync
  *
  * Bulk / catch-up: dados.gov.pt yearly XLSX (streaming parse).
- * Incremental: APIBase2-V2 GetInfoContrato?numDias=N (max 90) when BASE_API_KEY
- * is set. V2 has no from/to date range and no free-text search.
+ * Incremental: APIBase2-V2 GetInfoContrato?numDias=N (capped at V2_FETCH_MAX_DAYS,
+ * default 7; API max 90) when BASE_API_KEY is set. Larger gaps fall back to
+ * streamed XLSX. V2 has no from/to date range and no free-text search.
  *
  * Historical bug: XLSX.readFile() on the main thread blocked the event loop
  * for days. Parse is now an async stream (exceljs). Oversized files and any
@@ -21,16 +22,36 @@ import { nifsFromDoc, withNifs } from './nifs.js'
 import {
     daysSince,
     getSyncFreshness,
+    isStale,
     markNifBackfillDone,
     markSyncAttempt,
     markSyncError,
     markSyncSuccess,
 } from './syncState.js'
 import { iterateXlsxRows } from './xlsxStream.js'
+import {
+    QUERY_MAX_TIME_MS,
+    UPSERT_BATCH_SIZE,
+    V2_FETCH_MAX_DAYS,
+    V2_MAX_DAYS,
+    yearDateRange,
+    yieldToEventLoop,
+} from './queryLimits.js'
+
+export { V2_FETCH_MAX_DAYS, V2_MAX_DAYS }
 
 export const XLSX_MAX_SIZE = 250 * 1024 * 1024
-export const V2_MAX_DAYS = 90
 export const NIF_BACKFILL_BATCH = 200
+
+export const jobLocks = {
+    nifBackfill: false,
+    sync: false,
+}
+
+export function resetJobLocks() {
+    jobLocks.nifBackfill = false
+    jobLocks.sync = false
+}
 
 const DATASET_ID = '66d72d488ca4b7cb2de28712'
 const DATASET_SLUG = 'contratos-publicos-portal-base-impic-contratos-de-2012-a-2026'
@@ -238,7 +259,7 @@ export async function syncYear(year, xlsxPath, logger, batchSize = 500, { Model 
         await Model.bulkWrite(batch, { ordered: false })
         total += batch.length
         batch = []
-        await new Promise(resolve => setImmediate(resolve))
+        await yieldToEventLoop()
     }
 
     for await (const row of iterateXlsxRows(xlsxPath)) {
@@ -259,6 +280,7 @@ export async function syncYear(year, xlsxPath, logger, batchSize = 500, { Model 
         if (batch.length >= batchSize) {
             await flush()
             logger?.info({ year, synced: total, rssMB: rssMB() }, 'Batch upserted')
+            await yieldToEventLoop()
         }
     }
 
@@ -272,46 +294,75 @@ export async function syncYear(year, xlsxPath, logger, batchSize = 500, { Model 
     return total
 }
 
+async function findNifBackfillBatch(Model, batchSize) {
+    let cursor = Model.find({ nifsBackfilled: { $ne: true } })
+        .select('id contractingEntity awarded contractingEntities awardedEntities')
+        .limit(batchSize)
+    if (typeof cursor.maxTimeMS === 'function') cursor = cursor.maxTimeMS(QUERY_MAX_TIME_MS)
+    return cursor.lean()
+}
+
+/**
+ * Residual NIF backfill. Never run at process startup — only from sync,
+ * and never concurrently. Skips when sync_state.nif_backfill_at is set
+ * and a cheap limit(1) check finds no leftover docs.
+ */
 export async function backfillNifs(logger, {
     Contract: Model = Contract,
     batchSize = NIF_BACKFILL_BATCH,
     markDone = markNifBackfillDone,
+    getFreshness = getSyncFreshness,
+    force = false,
 } = {}) {
+    if (jobLocks.nifBackfill) {
+        return { processed: 0, skipped: true, reason: 'in_progress' }
+    }
+    jobLocks.nifBackfill = true
     let processed = 0
-    while (true) {
-        const docs = await Model.find({ nifsBackfilled: { $ne: true } })
-            .select('id contractingEntity awarded contractingEntities awardedEntities')
-            .limit(batchSize)
-            .lean()
-        if (!docs.length) break
-        const ops = docs.map(doc => {
-            const withFields = withNifs(doc)
-            return {
-                updateOne: {
-                    filter: { id: doc.id },
-                    update: {
-                        $set: {
-                            contractingNifs: withFields.contractingNifs,
-                            awardedNifs: withFields.awardedNifs,
-                            nifsBackfilled: true,
+    try {
+        if (!force) {
+            const freshness = await getFreshness()
+            if (freshness?.nif_backfill_at) {
+                const leftover = await findNifBackfillBatch(Model, 1)
+                if (!leftover.length) {
+                    return { processed: 0, skipped: true, reason: 'already_done' }
+                }
+            }
+        }
+        while (true) {
+            const docs = await findNifBackfillBatch(Model, batchSize)
+            if (!docs.length) break
+            const ops = docs.map(doc => {
+                const withFields = withNifs(doc)
+                return {
+                    updateOne: {
+                        filter: { id: doc.id },
+                        update: {
+                            $set: {
+                                contractingNifs: withFields.contractingNifs,
+                                awardedNifs: withFields.awardedNifs,
+                                nifsBackfilled: true,
+                            },
                         },
                     },
-                },
-            }
-        })
-        await Model.bulkWrite(ops, { ordered: false })
-        processed += ops.length
-        logger?.info({ processed }, 'NIF backfill batch')
-        await new Promise(resolve => setImmediate(resolve))
+                }
+            })
+            await Model.bulkWrite(ops, { ordered: false })
+            processed += ops.length
+            logger?.info({ processed }, 'NIF backfill batch')
+            await yieldToEventLoop()
+        }
+        if (processed) await markDone()
+        return { processed }
+    } finally {
+        jobLocks.nifBackfill = false
     }
-    if (processed) await markDone()
-    return { processed }
 }
 
 export function v2WindowDays(lastSuccess, now = Date.now()) {
     const gap = daysSince(lastSuccess, now)
-    if (!Number.isFinite(gap)) return V2_MAX_DAYS
-    return Math.min(V2_MAX_DAYS, Math.max(1, gap + 1))
+    if (!Number.isFinite(gap)) return V2_FETCH_MAX_DAYS
+    return Math.min(V2_FETCH_MAX_DAYS, Math.max(1, gap + 1))
 }
 
 export async function syncIncrementalV2(logger, {
@@ -328,7 +379,7 @@ export async function syncIncrementalV2(logger, {
     logger?.info({ days, last_success: freshness.last_success }, 'V2 incremental GetInfoContrato numDias')
     try {
         const live = await fetchOfficial({ numDias: days }, { logger, timeout: 120_000 })
-        const synced = await upsert(live.records)
+        const synced = await upsert(live.records, undefined, { batchSize: UPSERT_BATCH_SIZE })
         return { skipped: false, synced, errors: [], days }
     } catch (err) {
         logger?.error({ err }, 'V2 incremental sync failed')
@@ -355,8 +406,8 @@ async function syncXlsxYears(logger, mode) {
     } else {
         yearsToSync.push(currentYear)
         for (let y = currentYear - 1; y >= FIRST_YEAR; y--) {
-            const existing = await Contract.countDocuments({ ano: y })
-            if (existing === 0) {
+            const existing = await yearHasContracts(y)
+            if (!existing) {
                 yearsToSync.push(y)
                 break
             }
@@ -377,7 +428,7 @@ async function syncXlsxYears(logger, mode) {
     }
 
     for (const year of yearsToSync) {
-        await new Promise(resolve => setImmediate(resolve))
+        await yieldToEventLoop()
         logger?.info({ year, mode }, 'Fetching resource URL for year')
         let xlsxUrl
         try {
@@ -413,11 +464,31 @@ function formatErrors(errors) {
     return errors.map(e => `${e.year ?? e.source}: ${e.error}`).join('; ')
 }
 
+export async function yearHasContracts(year, Model = Contract) {
+    const range = yearDateRange(year)
+    if (!range) return false
+    let cursor = Model.findOne({ date: range }).select('id')
+    if (typeof cursor.maxTimeMS === 'function') cursor = cursor.maxTimeMS(QUERY_MAX_TIME_MS)
+    const doc = await cursor.lean()
+    return Boolean(doc)
+}
+
+export function planStartupJobs({ count, lastSuccess }) {
+    return {
+        nifBackfill: false,
+        sync: count === 0 ? 'backfill' : (isStale(lastSuccess) ? 'incremental' : null),
+    }
+}
+
 /**
  * @param {object} logger
  * @param {'incremental'|'backfill'} mode
  */
 export async function syncContracts(logger, mode = 'backfill') {
+    if (jobLocks.sync) {
+        return { skipped: true, reason: 'in_progress', source: 'none', synced: 0, errors: [], sources: [] }
+    }
+    jobLocks.sync = true
     await markSyncAttempt()
     const errors = []
     let grandTotal = 0
@@ -441,7 +512,7 @@ export async function syncContracts(logger, mode = 'backfill') {
             }
             const freshness = await getSyncFreshness()
             const gap = daysSince(freshness.last_success)
-            const needXlsx = v2.skipped || v2.errors.length > 0 || gap > V2_MAX_DAYS
+            const needXlsx = v2.skipped || v2.errors.length > 0 || gap > V2_FETCH_MAX_DAYS
             if (needXlsx) {
                 const xlsx = await syncXlsxYears(logger, mode)
                 grandTotal += xlsx.synced
@@ -473,5 +544,7 @@ export async function syncContracts(logger, mode = 'backfill') {
         await markSyncError(formatErrors(all))
         logger?.error({ err, errors: all }, 'Sync failed')
         return { source: sources.join('+') || 'none', synced: grandTotal, errors: all, sources }
+    } finally {
+        jobLocks.sync = false
     }
 }

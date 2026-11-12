@@ -66,4 +66,30 @@ describe('GET /base/contracts nif filter', () => {
         assert.equal(res.json().source, 'local')
         await app.close()
     })
+
+    it('forwards from/to/year on text search', async () => {
+        const app = await build({
+            searchContracts: async (query) => {
+                assert.equal(query.q, 'hospital')
+                assert.equal(query.from, '2024-01-01')
+                assert.equal(query.to, '2024-12-31')
+                assert.equal(query.year, 2024)
+                return {
+                    query: 'hospital',
+                    total: 0,
+                    page: 1,
+                    limit: 25,
+                    pages: 0,
+                    source: 'local',
+                    data: [],
+                }
+            },
+        })
+        const res = await app.inject({
+            method: 'GET',
+            url: '/base/contracts/search?q=hospital&from=2024-01-01&to=2024-12-31&year=2024',
+        })
+        assert.equal(res.statusCode, 200)
+        await app.close()
+    })
 })

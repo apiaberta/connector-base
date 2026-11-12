@@ -6,6 +6,7 @@ import { after, describe, it } from 'node:test'
 import ExcelJS from 'exceljs'
 import { iterateXlsxRows, stringifyCell } from '../src/xlsxStream.js'
 import { mapColumns, rowToDoc, sizeCapError, syncYear, v2WindowDays } from '../src/sync.js'
+import { V2_FETCH_MAX_DAYS, V2_MAX_DAYS } from '../src/queryLimits.js'
 import { createMemoryContract } from './helpers.js'
 
 describe('stringifyCell / mapColumns / rowToDoc', () => {
@@ -51,11 +52,13 @@ describe('stringifyCell / mapColumns / rowToDoc', () => {
         assert.match(err.message, /78\.1 MB/)
     })
 
-    it('v2 window is last-N-days, capped at 90', () => {
-        assert.equal(v2WindowDays(null), 90)
+    it('v2 window is last-N-days, capped below the API max of 90', () => {
+        assert.equal(V2_MAX_DAYS, 90)
+        assert.equal(v2WindowDays(null), V2_FETCH_MAX_DAYS)
         const now = Date.parse('2026-11-12T00:00:00Z')
         assert.equal(v2WindowDays('2026-11-11T00:00:00Z', now), 2)
-        assert.equal(v2WindowDays('2026-07-08T00:00:00Z', now), 90)
+        assert.equal(v2WindowDays('2026-07-08T00:00:00Z', now), V2_FETCH_MAX_DAYS)
+        assert.ok(V2_FETCH_MAX_DAYS < V2_MAX_DAYS)
     })
 })
 
