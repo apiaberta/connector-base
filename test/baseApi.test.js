@@ -11,6 +11,7 @@ import {
     mapOfficialContract,
     normalizeDate,
     officialContractUrl,
+    officialContractsUrl,
     parseCpv,
     parseEntity,
     parseMoney,
@@ -31,6 +32,7 @@ describe('BASE API constants', () => {
         )
         assert.ok(!BASE_API_URL.includes('/APIBase2/'))
         assert.ok(!officialContractUrl(1).includes('/APIBase2/'))
+        assert.match(officialContractsUrl({ nifEntidade: '519459369' }), /nifEntidade=519459369/)
     })
 
     it('does not hardcode the discontinued V1 URL in runtime entry points', () => {
