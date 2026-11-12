@@ -7,8 +7,9 @@ import swagger from '@fastify/swagger'
 import swaggerUi from '@fastify/swagger-ui'
 import { baseRoutes } from './routes.js'
 import { metaRoutes } from './meta.js'
-import { backfillNifs, syncContracts } from './sync.js'
-import { getSyncFreshness, isStale } from './syncState.js'
+import { planStartupJobs, syncContracts } from './sync.js'
+import { Contract, dropContractsTextIndex } from './models/contract.js'
+import { getSyncFreshness } from './syncState.js'
 
 const envPath = resolve(process.cwd(), '.env')
 if (existsSync(envPath)) {
@@ -36,7 +37,7 @@ await app.register(swagger, {
     info: {
       title: 'API Aberta - BASE Connector',
       description: 'Portuguese public contracts from BASE.gov.pt. Bulk data from dados.gov.pt XLSX (public domain). Live enrichment and incremental sync via official APIBase2-V2 (BASE_API_KEY). Filter contracts by nif. The previous /APIBase2 endpoint is discontinued on 2026-12-04.',
-      version: '1.3.0',
+      version: '1.4.0',
     },
     servers: [{ url: `http://localhost:${PORT}` }],
     tags: [
@@ -103,19 +104,17 @@ app.log.info('Connected to MongoDB')
 await app.listen({ port: PORT, host: '0.0.0.0' })
 app.log.info(`${SERVICE_NAME} listening on port ${PORT}`)
 
-// Then sync in background — non-blocking for HTTP
-// Empty collection: XLSX backfill. Stale last_success: incremental catch-up.
-const { Contract } = await import('./models/contract.js')
-const count = await Contract.countDocuments()
-const freshness = await getSyncFreshness()
-
 setImmediate(() => {
-  backfillNifs(app.log)
-    .then(r => app.log.info(r, 'Startup NIF backfill done'))
-    .catch(err => app.log.error({ err }, 'Startup NIF backfill failed'))
+  dropContractsTextIndex(Contract.collection, app.log)
+    .then(r => app.log.info(r, 'Contracts text index check done'))
+    .catch(err => app.log.error({ err }, 'Dropping contracts text index failed'))
 })
 
-if (count === 0) {
+const count = await Contract.estimatedDocumentCount()
+const freshness = await getSyncFreshness()
+const jobs = planStartupJobs({ count, lastSuccess: freshness.last_success })
+
+if (jobs.sync === 'backfill') {
   app.log.info('Collection empty — running initial backfill sync...')
   syncContracts(app.log, 'backfill')
     .then(r => {
@@ -123,7 +122,7 @@ if (count === 0) {
       else app.log.info({ r }, 'Initial contracts sync done')
     })
     .catch(err => app.log.error({ err }, 'Initial contracts sync failed'))
-} else if (isStale(freshness.last_success)) {
+} else if (jobs.sync === 'incremental') {
   app.log.warn(
     { last_success: freshness.last_success, last_error: freshness.last_error },
     'Local data stale — running catch-up sync in background'

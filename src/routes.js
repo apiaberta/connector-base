@@ -2,6 +2,7 @@ import { Contract } from './models/contract.js'
 import { fetchBase } from './baseClient.js'
 import { BASE_AUTH_HEADER, findContractRecord, mapOfficialContract, officialContractUrl } from './baseApi.js'
 import { listContracts, searchContracts } from './contractsService.js'
+import { LOOKUP_PROJECTION, QUERY_MAX_TIME_MS } from './queryLimits.js'
 
 const nifQuery = {
     type: 'string',
@@ -90,7 +91,7 @@ export async function baseRoutes(app, opts = {}) {
 
     app.get('/contracts/search', {
         schema: {
-            description: 'Search public contracts by text and/or NIF. V2 has no free-text search; live fallback is used only for NIF queries.',
+            description: 'Search public contracts by text and/or NIF. Text search uses a date window (default last 365 days; override with from/to/year), maxTimeMS, and limit ≤ 100. V2 has no free-text search; live fallback is used only for NIF queries.',
             tags: ['Contracts'],
             querystring: {
                 type: 'object',
@@ -99,6 +100,9 @@ export async function baseRoutes(app, opts = {}) {
                     nif: nifQuery,
                     page: { type: 'integer', default: 1, minimum: 1 },
                     limit: { type: 'integer', default: 25, minimum: 1, maximum: 100 },
+                    from: { type: 'string', pattern: '^\\d{4}-\\d{2}-\\d{2}$', description: 'Text-search start date (YYYY-MM-DD). Default: today minus SEARCH_WINDOW_DAYS.' },
+                    to: { type: 'string', pattern: '^\\d{4}-\\d{2}-\\d{2}$', description: 'Text-search end date (YYYY-MM-DD). Default: today.' },
+                    year: { type: 'integer', description: 'Restrict text search to a calendar year (YYYY-MM-DD range on the date index)' },
                 },
                 anyOf: [{ required: ['q'] }, { required: ['nif'] }],
             },
@@ -163,7 +167,9 @@ export async function baseRoutes(app, opts = {}) {
             }
         }
 
-        const contract = await Contract.findOne({ id: String(id) }).lean()
+        let lookup = Contract.findOne({ id: String(id) }, LOOKUP_PROJECTION)
+        if (typeof lookup.maxTimeMS === 'function') lookup = lookup.maxTimeMS(QUERY_MAX_TIME_MS)
+        const contract = await lookup.lean()
         if (!contract) {
             return { error: 'Contract not found', id }
         }

@@ -18,6 +18,9 @@ export function createMemoryContract(docs = []) {
     }
 
     function matchValue(docVal, spec) {
+        if (spec instanceof RegExp) {
+            return spec.test(String(docVal ?? ''))
+        }
         if (spec && typeof spec === 'object' && !Array.isArray(spec) && !(spec instanceof Date)) {
             if (spec.$regex != null) {
                 return new RegExp(spec.$regex, spec.$options || '').test(String(docVal ?? ''))
@@ -28,6 +31,12 @@ export function createMemoryContract(docs = []) {
                 return spec.$exists ? exists : !exists
             }
             if (spec.$in) return spec.$in.includes(docVal)
+            if ('$gte' in spec || '$lte' in spec) {
+                const val = docVal
+                if (spec.$gte != null && (val == null || val < spec.$gte)) return false
+                if (spec.$lte != null && (val == null || val > spec.$lte)) return false
+                return true
+            }
         }
         if (Array.isArray(docVal)) return docVal.includes(spec)
         return docVal === spec
@@ -57,9 +66,20 @@ export function createMemoryContract(docs = []) {
                 return api
             },
             select() { return api },
+            maxTimeMS() { return api },
             lean() { return api },
             then(resolve, reject) {
                 return Promise.resolve(state.rows).then(resolve, reject)
+            },
+        }
+        return api
+    }
+
+    function countQuery(n) {
+        const api = {
+            maxTimeMS() { return api },
+            then(resolve, reject) {
+                return Promise.resolve(n).then(resolve, reject)
             },
         }
         return api
@@ -71,13 +91,17 @@ export function createMemoryContract(docs = []) {
             return query(store.filter(doc => matches(doc, filter)))
         },
         countDocuments(filter) {
-            return Promise.resolve(store.filter(doc => matches(doc, filter)).length)
+            return countQuery(store.filter(doc => matches(doc, filter)).length)
+        },
+        estimatedDocumentCount() {
+            return Promise.resolve(store.length)
         },
         findOne(filter) {
             const found = store.find(doc => matches(doc, filter)) || null
             return {
                 sort() { return this },
                 select() { return this },
+                maxTimeMS() { return this },
                 lean() { return Promise.resolve(found) },
                 then(resolve, reject) { return Promise.resolve(found).then(resolve, reject) },
             }
