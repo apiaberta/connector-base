@@ -1,3 +1,5 @@
+import { nifsFromDoc } from './nifs.js'
+
 /**
  * Official Portal BASE API (APIBase2-V2).
  *
@@ -98,7 +100,12 @@ export function unwrapRecords(payload) {
     if (Array.isArray(payload)) {
         return payload.filter(item => item && typeof item === 'object' && !Array.isArray(item))
     }
-    if (typeof payload === 'object') return [payload]
+    if (typeof payload === 'object') {
+        for (const key of ['contratos', 'Contratos', 'data', 'Data', 'results', 'Results']) {
+            if (Array.isArray(payload[key])) return unwrapRecords(payload[key])
+        }
+        return [payload]
+    }
     return []
 }
 
@@ -389,5 +396,73 @@ export function mapOfficialContract(raw) {
 }
 
 export function officialContractUrl(idContrato) {
-    return `${BASE_API_URL}/GetInfoContrato?idContrato=${encodeURIComponent(idContrato)}`
+    return officialContractsUrl({ idContrato })
+}
+
+/**
+ * Build GetInfoContrato URL. V2 requires at least one of: idContrato,
+ * IdProcedimento, nifEntidade, nAnuncio, numAcordoQuadro, numDias (max 90), Ano.
+ * There is no free-text search and no from/to date range.
+ */
+export function officialContractsUrl({
+    idContrato,
+    idProcedimento,
+    nifEntidade,
+    nAnuncio,
+    numAcordoQuadro,
+    numDias,
+    ano,
+} = {}) {
+    const qs = new URLSearchParams()
+    if (idContrato != null && idContrato !== '') qs.set('idContrato', String(idContrato))
+    if (idProcedimento != null && idProcedimento !== '') qs.set('IdProcedimento', String(idProcedimento))
+    if (nifEntidade) qs.set('nifEntidade', String(nifEntidade))
+    if (nAnuncio) qs.set('nAnuncio', String(nAnuncio))
+    if (numAcordoQuadro) qs.set('numAcordoQuadro', String(numAcordoQuadro))
+    if (numDias != null && numDias !== '') qs.set('numDias', String(numDias))
+    if (ano != null && ano !== '') qs.set('Ano', String(ano))
+    const query = qs.toString()
+    return query ? `${BASE_API_URL}/GetInfoContrato?${query}` : `${BASE_API_URL}/GetInfoContrato`
+}
+
+export function assertOfficialPayload(payload) {
+    if (payload == null) return payload
+    if (typeof payload === 'string') {
+        const text = payload.trim()
+        if (/invalid token|token is required|error/i.test(text)) {
+            throw new Error(text.slice(0, 400))
+        }
+        throw new Error(`Unexpected BASE API text response: ${text.slice(0, 200)}`)
+    }
+    if (typeof payload === 'object' && !Array.isArray(payload)) {
+        const errMsg = payload.error ?? payload.Error ?? payload.mensagem
+        const hasId = pickField(payload, 'idcontrato', 'idContrato')
+        if (errMsg && hasId == null) throw new Error(String(errMsg).slice(0, 400))
+    }
+    return payload
+}
+
+export function toCacheDocument(mapped, { syncedAt = new Date() } = {}) {
+    if (!mapped?.id) return null
+    const { contractingNifs, awardedNifs } = nifsFromDoc({
+        contractingEntity: mapped.contractingEntity,
+        awarded: mapped.awarded,
+        contractingEntities: mapped.contractingEntities,
+        awardedEntities: mapped.awardedEntities,
+    })
+    return {
+        id: mapped.id,
+        description: mapped.description ?? '',
+        contractingEntity: mapped.contractingEntity ?? '',
+        awarded: mapped.awarded ?? '',
+        value: mapped.value ?? 0,
+        date: mapped.date ?? null,
+        type: mapped.type ?? 'unknown',
+        ano: mapped.year ?? null,
+        nAnuncio: mapped.announcementNumber ?? '',
+        contractingNifs,
+        awardedNifs,
+        nifsBackfilled: true,
+        synced_at: syncedAt,
+    }
 }

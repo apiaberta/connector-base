@@ -58,6 +58,9 @@ function isChainError(err) {
   return false
 }
 
+export const DEFAULT_BASE_TIMEOUT_MS = 20_000
+export const SYNC_BASE_TIMEOUT_MS = 120_000
+
 function requestOnce(url, options = {}) {
   const u = new URL(url)
   if (!isBaseGovHost(u.hostname)) {
@@ -66,6 +69,7 @@ function requestOnce(url, options = {}) {
 
   const method = options.method || 'GET'
   const headers = { 'User-Agent': 'apiaberta-base/1.1', ...options.headers }
+  const timeout = options.timeout ?? DEFAULT_BASE_TIMEOUT_MS
 
   return new Promise((resolve, reject) => {
     const req = https.request({
@@ -89,6 +93,10 @@ function requestOnce(url, options = {}) {
           async json() { return JSON.parse(body.toString('utf8')) },
         })
       })
+    })
+    req.setTimeout(timeout, () => {
+      req.destroy()
+      reject(new Error(`BASE API timeout after ${timeout}ms`))
     })
     req.on('error', reject)
     if (options.body) req.write(options.body)
