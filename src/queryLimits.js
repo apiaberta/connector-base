@@ -26,6 +26,7 @@ export const LIST_PROJECTION = {
     value: 1,
     date: 1,
     type: 1,
+    local: 1,
     synced_at: 1,
 }
 

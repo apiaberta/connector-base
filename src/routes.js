@@ -18,6 +18,7 @@ const listQuerystring = {
         type: { type: 'string', description: 'Contract type (ajuste, concurso)' },
         year: { type: 'integer', description: 'Filter by year (e.g. 2026)' },
         nif: nifQuery,
+        local: { type: 'string', description: 'Place of execution (local de execução), case- and accent-insensitive, e.g. Oeiras. Without year, limited to the last 365 days.' },
     },
 }
 
@@ -31,6 +32,7 @@ const listItem = {
         value: { type: ['number', 'null'] },
         date: { type: ['string', 'null'] },
         type: { type: ['string', 'null'] },
+        local: { type: ['string', 'null'] },
         synced_at: { type: ['string', 'null'], format: 'date-time' },
     },
 }

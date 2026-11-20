@@ -1,6 +1,7 @@
 import { Contract as ContractModel } from './models/contract.js'
 import { fetchOfficialContracts, hasOfficialApiKey } from './official.js'
 import { toCacheDocument } from './baseApi.js'
+import { accentInsensitiveRegex } from './accentRegex.js'
 import { invalidNifError, normalizeNif } from './nifs.js'
 import { getSyncFreshness, isStale } from './syncState.js'
 import {
@@ -29,6 +30,7 @@ export function toListItem(contract) {
         value: contract.value,
         date: contract.date,
         type: contract.type,
+        local: contract.local ?? null,
         synced_at: contract.synced_at,
     }
 }
@@ -37,12 +39,16 @@ export function nifClause(nif) {
     return { $or: [{ contractingNifs: nif }, { awardedNifs: nif }] }
 }
 
-export function buildListQuery({ type, year, nif } = {}) {
+// `local` is free text on the contract (local de execução, e.g. "Portugal - Lisboa - Oeiras").
+// It has no index, so callers pass a date window (dateRange) to bound the scan.
+export function buildListQuery({ type, year, nif, local, dateRange } = {}) {
     const parts = []
     if (type) parts.push({ type })
     const yearRange = yearDateRange(year)
     if (yearRange) parts.push({ date: yearRange })
+    else if (dateRange) parts.push({ date: dateRange })
     if (nif) parts.push(nifClause(nif))
+    if (local) parts.push({ local: accentInsensitiveRegex(local) })
     if (parts.length === 0) return {}
     if (parts.length === 1) return parts[0]
     return { $and: parts }
@@ -151,6 +157,7 @@ export async function listContracts({
     type,
     year,
     nif,
+    local,
     logger,
     Contract = ContractModel,
     fetchOfficial = fetchOfficialContracts,
@@ -158,8 +165,11 @@ export async function listContracts({
 } = {}) {
     const nifNorm = nif == null || nif === '' ? null : normalizeNif(nif)
     if (nif != null && nif !== '' && !nifNorm) throw invalidNifError(nif)
+    const localText = typeof local === 'string' ? local.trim() : ''
+    // Without a year, a local filter is bounded to the default search window (uses the date index).
+    const dateRange = localText && !yearDateRange(year) ? searchDateRange({}) : null
 
-    const query = buildListQuery({ type, year, nif: nifNorm })
+    const query = buildListQuery({ type, year, nif: nifNorm, local: localText, dateRange })
     const paging = clampPageLimit(page, limit)
     const skip = (paging.page - 1) * paging.limit
 
