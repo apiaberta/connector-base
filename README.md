@@ -16,9 +16,9 @@ Portuguese public procurement data from BASE.gov.pt.
 | Method | Path | Description |
 |--------|------|-------------|
 | GET | /health | Service health check |
-| GET | /base/meta | Service metadata with sync stats (`last_sync`, `last_attempt`, `last_success`, `last_error`) |
+| GET | /base/meta | Service metadata with sync stats (`last_sync`, `last_attempt`, `last_success`, `last_error`, `local_backfill_*`) |
 | GET | /docs | Swagger UI |
-| GET | /base/contracts | Paginated contract list (`page`, `limit`, `type`, `year`, `nif`) |
+| GET | /base/contracts | Paginated contract list (`page`, `limit`, `type`, `year`, `nif`, `local`) |
 | GET | /base/contracts/search?q=termo | Text and/or NIF search; optional `from`, `to`, `year`; a 9-digit `q` is treated as NIF |
 | GET | /base/contracts/lookup/:id | Live official API detail (APIBase2-V2), MongoDB fallback |
 
@@ -63,6 +63,8 @@ Tests use in-memory fakes and never connect to MongoDB. Do not point `MONGO_URI`
 - `UPSERT_BATCH_SIZE`: `bulkWrite` batch size for V2 upserts (default 200)
 - `V2_FETCH_MAX_DAYS`: max `numDias` for one V2 GetInfoContrato call (default 7, API hard max 90). Larger gaps overlay those recent days from V2 and fill the rest from streamed XLSX.
 
+`local` on list items is the place of execution (Portal BASE `localExecucao` / XLSX `LocalExecucao`). Live V2 cache upserts persist it. Historical documents are filled by `npm run backfill:local` (see Sync). There is no Mongo index on `local`; without `year` the list filter is bounded to the last 365 days.
+
 ## Data Source
 
 Bulk / catch-up sync uses public dados.gov.pt XLSX files (recommended by IMPIC for initial load). Files are downloaded to disk and parsed **row-by-row** (ExcelJS stream) so an ~80 MB yearly sheet cannot block the event loop or clone the whole workbook into RAM. Download size cap is 250 MB; exceeding it, a missing current-year file, or a parse failure is recorded as a **sync error** (`last_error`) — never as `synced: 0` success.
@@ -106,12 +108,25 @@ Daily at 03:00 Europe/Lisbon:
 
 Startup only runs an XLSX backfill if the collection is empty (`estimatedDocumentCount() === 0`), or an incremental catch-up if `last_success` is older than 48h. A process-wide sync lock prevents overlap with the 03:00 cron.
 
+### Local (place of execution) backfill
+
+Historical cache rows were stored without `local`. Filling them is a **manual one-shot**, not part of deploy or of `npm start`:
+
+```
+NODE_ENV=production npm run backfill:local
+```
+
+Run it on the production host, in the connector working directory, with the same `.env` / `MONGO_URI` as the API process. It does **not** start the HTTP server. Someone has to launch it once (pm2/systemd does not). Safe to re-run: each year streams `contratosYYYY.xlsx` from dados.gov.pt and `$set`s `{ local }` only where the field is missing or empty. Progress is `sync_state.local_backfill_year` (last completed year, 2012–2026) and `local_backfill_at` when all years succeed; an interrupted run resumes at the next year. Logs one line per year (`Local backfill year complete`) plus batch RSS. No index is created on `local`.
+
+Prefer not to overlap it with the 03:00 cron (both download XLSX). The in-process lock only covers a second call in the same Node process.
+
 `/base/meta` `stats`:
 
 - `last_sync` / `last_success` — last fully successful run
 - `last_attempt` — last run start
 - `last_error` — last failure message (size-cap skip, download/parse error, V2 error); `null` after a clean run
 - `contracts` — `estimatedDocumentCount()` (metadata; not an exact COLLSCAN)
+- `local_backfill_year` / `local_backfill_at` — XLSX `local` backfill cursor and completion time (`null` until `npm run backfill:local` is used)
 
 ## Indexes
 

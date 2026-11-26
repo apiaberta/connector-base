@@ -3,8 +3,8 @@ export function createMemoryContract(docs = []) {
 
     function matches(doc, query) {
         if (!query || Object.keys(query).length === 0) return true
-        if (query.$and) return query.$and.every(part => matches(doc, part))
-        if (query.$or) return query.$or.some(part => matches(doc, part))
+        if (query.$and && !query.$and.every(part => matches(doc, part))) return false
+        if (query.$or && !query.$or.some(part => matches(doc, part))) return false
         if (query.$text) {
             const needle = String(query.$text.$search || '').toLowerCase()
             return [doc.description, doc.contractingEntity, doc.awarded]
@@ -107,14 +107,20 @@ export function createMemoryContract(docs = []) {
             }
         },
         async bulkWrite(ops) {
+            let modifiedCount = 0
             for (const op of ops) {
                 const filter = op.updateOne.filter
                 const set = op.updateOne.update.$set
-                const idx = store.findIndex(doc => doc.id === filter.id)
-                if (idx >= 0) store[idx] = { ...store[idx], ...set }
-                else if (op.updateOne.upsert) store.push({ id: filter.id, ...set })
+                const idx = store.findIndex(doc => matches(doc, filter))
+                if (idx >= 0) {
+                    store[idx] = { ...store[idx], ...set }
+                    modifiedCount += 1
+                } else if (op.updateOne.upsert) {
+                    store.push({ id: filter.id, ...set })
+                    modifiedCount += 1
+                }
             }
-            return { ok: 1 }
+            return { ok: 1, modifiedCount }
         },
     }
 }

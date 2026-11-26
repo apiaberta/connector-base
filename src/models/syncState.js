@@ -8,6 +8,8 @@ const syncStateSchema = new mongoose.Schema({
     last_xlsx_success: Date,
     last_v2_success: Date,
     nif_backfill_at: Date,
+    local_backfill_at: Date,
+    local_backfill_year: Number,
 }, {
     collection: 'sync_state',
     versionKey: false,

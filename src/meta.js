@@ -28,6 +28,8 @@ export async function metaRoutes(app) {
                 last_attempt: freshness.last_attempt,
                 last_success: freshness.last_success,
                 last_error: freshness.last_error,
+                local_backfill_at: freshness.local_backfill_at,
+                local_backfill_year: freshness.local_backfill_year,
             },
         }
     })

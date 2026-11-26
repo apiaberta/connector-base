@@ -7,7 +7,8 @@
     "dev": "node --watch src/index.js",
     "start": "node src/index.js",
     "test": "node --test test/*.test.js",
-    "check:base": "node scripts/check-base.js"
+    "check:base": "node scripts/check-base.js",
+    "backfill:local": "node scripts/backfill-local.js"
   },
   "dependencies": {
     "@fastify/swagger": "^9.0.0",

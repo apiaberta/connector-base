@@ -288,6 +288,7 @@ describe('upsertOfficial', () => {
         assert.equal(n, 1)
         assert.equal(Contract.store[0].contractingEntity, '501501501 - Instituto de Teste, EPE')
         assert.deepEqual(Contract.store[0].contractingNifs, ['501501501'])
+        assert.equal(Contract.store[0].local, 'Portugal, Coimbra, Coimbra\nPortugal, Porto, Porto')
     })
 
     it('bulkWrites in batches instead of one giant array', async () => {
