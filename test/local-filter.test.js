@@ -1,8 +1,18 @@
 import { describe, it } from 'node:test'
 import assert from 'node:assert/strict'
+import { readFileSync } from 'node:fs'
+import { dirname, resolve } from 'node:path'
+import { fileURLToPath } from 'node:url'
 import { accentInsensitiveRegex } from '../src/accentRegex.js'
-import { buildListQuery, toListItem } from '../src/contractsService.js'
+import { joinExecutionPlace, mapOfficialContract, toCacheDocument } from '../src/baseApi.js'
+import { buildListQuery, listContracts, toListItem, upsertOfficial } from '../src/contractsService.js'
 import { LIST_PROJECTION } from '../src/queryLimits.js'
+import { createMemoryContract } from './helpers.js'
+
+const v2 = JSON.parse(readFileSync(
+    resolve(dirname(fileURLToPath(import.meta.url)), 'fixtures/contrato-v2.json'),
+    'utf8'
+))
 
 describe('accentInsensitiveRegex', () => {
     it('matches case- and accent-insensitively', () => {
@@ -51,5 +61,49 @@ describe('list output includes local', () => {
         assert.equal(LIST_PROJECTION.local, 1)
         assert.equal(toListItem({ id: '1', local: 'Portugal - Lisboa - Oeiras' }).local, 'Portugal - Lisboa - Oeiras')
         assert.equal(toListItem({ id: '1' }).local, null)
+    })
+})
+
+describe('toCacheDocument / upsertOfficial persist local from V2', () => {
+    it('joins localExecucao with the XLSX newline separator', () => {
+        const mapped = mapOfficialContract(v2)
+        assert.deepEqual(mapped.executionPlace, [
+            'Portugal, Coimbra, Coimbra',
+            'Portugal, Porto, Porto',
+        ])
+        assert.equal(
+            joinExecutionPlace(mapped.executionPlace),
+            'Portugal, Coimbra, Coimbra\nPortugal, Porto, Porto'
+        )
+        const cached = toCacheDocument(mapped)
+        assert.equal(cached.local, 'Portugal, Coimbra, Coimbra\nPortugal, Porto, Porto')
+    })
+
+    it('upserts local and listContracts finds local=Coimbra', async () => {
+        const Contract = createMemoryContract([])
+        const mapped = mapOfficialContract(v2)
+        const n = await upsertOfficial([mapped], Contract)
+        assert.equal(n, 1)
+        assert.equal(Contract.store[0].local, 'Portugal, Coimbra, Coimbra\nPortugal, Porto, Porto')
+
+        const found = await listContracts({
+            year: 2015,
+            local: 'Coimbra',
+            Contract,
+            fetchOfficial: async () => ({ disabled: true, records: [] }),
+            getFreshness: async () => ({ last_success: new Date() }),
+        })
+        assert.equal(found.total, 1)
+        assert.equal(found.data[0].id, '12345')
+        assert.match(found.data[0].local, /Coimbra/)
+
+        const missed = await listContracts({
+            year: 2015,
+            local: 'Oeiras',
+            Contract,
+            fetchOfficial: async () => ({ disabled: true, records: [] }),
+            getFreshness: async () => ({ last_success: new Date() }),
+        })
+        assert.equal(missed.total, 0)
     })
 })

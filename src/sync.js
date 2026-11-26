@@ -16,6 +16,7 @@ import { Readable } from 'node:stream'
 import { pipeline } from 'node:stream/promises'
 import path from 'node:path'
 import { Contract } from './models/contract.js'
+import { joinExecutionPlace } from './baseApi.js'
 import { upsertOfficial } from './contractsService.js'
 import { fetchOfficialContracts } from './official.js'
 import { nifsFromDoc, withNifs } from './nifs.js'
@@ -23,6 +24,8 @@ import {
     daysSince,
     getSyncFreshness,
     isStale,
+    markLocalBackfillDone,
+    markLocalBackfillYear,
     markNifBackfillDone,
     markSyncAttempt,
     markSyncError,
@@ -42,20 +45,53 @@ export { V2_FETCH_MAX_DAYS, V2_MAX_DAYS }
 
 export const XLSX_MAX_SIZE = 250 * 1024 * 1024
 export const NIF_BACKFILL_BATCH = 200
+export const LOCAL_BACKFILL_BATCH = 500
+export const LOCAL_BACKFILL_LAST_YEAR = 2026
 
 export const jobLocks = {
     nifBackfill: false,
+    localBackfill: false,
     sync: false,
 }
 
 export function resetJobLocks() {
     jobLocks.nifBackfill = false
+    jobLocks.localBackfill = false
     jobLocks.sync = false
 }
 
 const DATASET_ID = '66d72d488ca4b7cb2de28712'
 const DATASET_SLUG = 'contratos-publicos-portal-base-impic-contratos-de-2012-a-2026'
 const FIRST_YEAR = 2012
+
+export function localBackfillYears(lastYear = LOCAL_BACKFILL_LAST_YEAR) {
+    const years = []
+    for (let year = FIRST_YEAR; year <= lastYear; year++) years.push(year)
+    return years
+}
+
+export function missingLocalFilter(id) {
+    return {
+        id: String(id),
+        $or: [
+            { local: { $exists: false } },
+            { local: null },
+            { local: '' },
+        ],
+    }
+}
+
+export function localBackfillOp(id, local) {
+    const text = local == null ? '' : String(local)
+    if (!id || !text.trim()) return null
+    return {
+        updateOne: {
+            filter: missingLocalFilter(id),
+            update: { $set: { local: text } },
+            upsert: false,
+        },
+    }
+}
 
 export function rssMB() {
     return Math.round(process.memoryUsage().rss / 1024 / 1024)
@@ -157,7 +193,7 @@ export function rowToDoc(row, year, cols) {
         date,
         type: String(cell(row, cols.tipoprocedimento) || cell(row, cols.tipoContrato) || 'unknown'),
         ano,
-        local: String(cell(row, cols.LocalExecucao) || ''),
+        local: joinExecutionPlace(cell(row, cols.LocalExecucao) || ''),
         cpv: String(cell(row, cols.CPV) || ''),
         fundamentacao: String(cell(row, cols.fundamentacao) || ''),
         nAnuncio: String(cell(row, cols.nAnuncio) || ''),
@@ -356,6 +392,149 @@ export async function backfillNifs(logger, {
         return { processed }
     } finally {
         jobLocks.nifBackfill = false
+    }
+}
+
+async function* iterateLoadedYear(year, loadYear) {
+    const result = loadYear(year)
+    if (result && typeof result.next === 'function') {
+        yield* result
+        return
+    }
+    const rows = await result
+    if (Array.isArray(rows)) yield* rows
+}
+
+async function* loadLocalBackfillYearFromXlsx(year, { dataset, tmpDir, logger }) {
+    const fs = await import('node:fs/promises')
+    const xlsxUrl = await getResourceUrl(year, dataset)
+    if (!xlsxUrl) throw new Error(`No XLSX resource found for year ${year}`)
+    const destPath = path.join(tmpDir, `contratos${year}.xlsx`)
+    await downloadFile(xlsxUrl, destPath, logger, year)
+    try {
+        let cols = null
+        for await (const row of iterateXlsxRows(destPath)) {
+            if (!cols) {
+                cols = mapColumns(row.map(h => String(h ?? '')))
+                continue
+            }
+            const doc = rowToDoc(row, year, cols)
+            if (doc?.id) yield { id: doc.id, local: doc.local }
+        }
+    } finally {
+        await fs.unlink(destPath).catch(() => {})
+    }
+}
+
+/**
+ * One-shot XLSX backfill of `local` (local de execução). Never started at
+ * HTTP boot or by the daily cron — run `npm run backfill:local` on the
+ * server. Resumes from sync_state.local_backfill_year. $set { local } only
+ * where the field is missing or empty. No index on local.
+ */
+export async function backfillLocal(logger, {
+    Contract: Model = Contract,
+    years = localBackfillYears(),
+    loadYear = null,
+    getFreshness = getSyncFreshness,
+    markYear = markLocalBackfillYear,
+    markDone = markLocalBackfillDone,
+    batchSize = LOCAL_BACKFILL_BATCH,
+    force = false,
+} = {}) {
+    if (jobLocks.localBackfill || jobLocks.sync) {
+        return { updated: 0, scanned: 0, skipped: true, reason: 'in_progress', years: [], errors: [] }
+    }
+    jobLocks.localBackfill = true
+    const errors = []
+    let updated = 0
+    let scanned = 0
+    const completed = []
+    let tmpDir = null
+    try {
+        const freshness = await getFreshness()
+        if (!force && freshness?.local_backfill_at) {
+            return { updated: 0, scanned: 0, skipped: true, reason: 'already_done', years: [], errors: [] }
+        }
+
+        const lastYear = (!force && Number.isFinite(freshness?.local_backfill_year))
+            ? freshness.local_backfill_year
+            : FIRST_YEAR - 1
+        const remaining = years.filter(year => year > lastYear)
+        if (!remaining.length) {
+            await markDone(LOCAL_BACKFILL_LAST_YEAR)
+            return { updated: 0, scanned: 0, skipped: true, reason: 'already_done', years: [], errors: [] }
+        }
+
+        let yearLoader = loadYear
+        if (!yearLoader) {
+            const fs = await import('node:fs/promises')
+            const os = await import('node:os')
+            tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), 'base-local-backfill-'))
+            const dataset = await fetchDatasetJson()
+            yearLoader = year => loadLocalBackfillYearFromXlsx(year, { dataset, tmpDir, logger })
+        }
+
+        logger?.info(
+            { years: remaining, from: remaining[0], rssMB: rssMB() },
+            'Local backfill starting'
+        )
+
+        for (const year of remaining) {
+            await yieldToEventLoop()
+            let yearUpdated = 0
+            let yearScanned = 0
+            let batch = []
+            const flush = async () => {
+                if (!batch.length) return
+                const result = await Model.bulkWrite(batch, { ordered: false })
+                const n = result?.modifiedCount ?? result?.nModified ?? batch.length
+                yearUpdated += n
+                updated += n
+                batch = []
+                await yieldToEventLoop()
+            }
+            try {
+                logger?.info({ year, rssMB: rssMB() }, 'Local backfill year')
+                for await (const row of iterateLoadedYear(year, yearLoader)) {
+                    yearScanned += 1
+                    scanned += 1
+                    const op = localBackfillOp(row?.id, row?.local)
+                    if (!op) continue
+                    batch.push(op)
+                    if (batch.length >= batchSize) {
+                        await flush()
+                        logger?.info(
+                            { year, scanned: yearScanned, updated: yearUpdated, rssMB: rssMB() },
+                            'Local backfill batch'
+                        )
+                    }
+                }
+                await flush()
+                await markYear(year)
+                completed.push(year)
+                logger?.info(
+                    { year, scanned: yearScanned, updated: yearUpdated, rssMB: rssMB() },
+                    'Local backfill year complete'
+                )
+            } catch (err) {
+                logger?.error({ err, year, scanned: yearScanned, updated: yearUpdated }, 'Local backfill year failed')
+                errors.push({ year, error: err.message })
+                break
+            }
+        }
+
+        if (!errors.length && remaining.every(year => completed.includes(year))) {
+            await markDone(remaining[remaining.length - 1])
+        }
+
+        return { updated, scanned, skipped: false, years: completed, errors }
+    } finally {
+        if (tmpDir) {
+            const fs = await import('node:fs/promises')
+            await fs.rm(tmpDir, { recursive: true, force: true }).catch(() => {})
+        }
+        jobLocks.localBackfill = false
     }
 }
 

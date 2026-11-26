@@ -2,8 +2,11 @@ import assert from 'node:assert/strict'
 import { afterEach, describe, it } from 'node:test'
 import { daysSince, isStale, STALE_AFTER_MS } from '../src/syncState.js'
 import {
+    backfillLocal,
     backfillNifs,
     jobLocks,
+    localBackfillYears,
+    LOCAL_BACKFILL_LAST_YEAR,
     planStartupJobs,
     resetJobLocks,
     syncContracts,
@@ -87,6 +90,125 @@ describe('backfillNifs', () => {
                 throw new Error('should not mark done')
             },
             getFreshness: async () => ({ nif_backfill_at: new Date() }),
+        })
+        assert.equal(result.skipped, true)
+        assert.equal(result.reason, 'already_done')
+    })
+})
+
+describe('backfillLocal', () => {
+    it('covers 2012 through 2026', () => {
+        const years = localBackfillYears()
+        assert.equal(years[0], 2012)
+        assert.equal(years.at(-1), LOCAL_BACKFILL_LAST_YEAR)
+        assert.equal(years.length, 15)
+    })
+
+    it('fills missing and empty local from XLSX rows and skips rows that already have it', async () => {
+        const Model = createMemoryContract([
+            { id: 'a' },
+            { id: 'b', local: '' },
+            { id: 'c', local: 'Portugal, Lisboa, Lisboa' },
+        ])
+        const yearsLoaded = []
+        const marked = []
+        let doneAt = null
+        const result = await backfillLocal(null, {
+            Contract: Model,
+            years: [2015],
+            loadYear: async (year) => {
+                yearsLoaded.push(year)
+                return [
+                    { id: 'a', local: 'Portugal, Coimbra, Coimbra' },
+                    { id: 'b', local: 'Portugal, Porto, Porto' },
+                    { id: 'c', local: 'SHOULD-NOT-APPLY' },
+                    { id: 'd', local: 'Portugal, Faro, Faro' },
+                    { id: 'e', local: '' },
+                ]
+            },
+            getFreshness: async () => ({}),
+            markYear: async (year) => { marked.push(year) },
+            markDone: async (year) => { doneAt = year },
+            batchSize: 2,
+        })
+        assert.equal(result.skipped, false)
+        assert.deepEqual(yearsLoaded, [2015])
+        assert.deepEqual(marked, [2015])
+        assert.equal(doneAt, 2015)
+        assert.equal(Model.store.find(d => d.id === 'a').local, 'Portugal, Coimbra, Coimbra')
+        assert.equal(Model.store.find(d => d.id === 'b').local, 'Portugal, Porto, Porto')
+        assert.equal(Model.store.find(d => d.id === 'c').local, 'Portugal, Lisboa, Lisboa')
+        assert.equal(Model.store.find(d => d.id === 'd'), undefined)
+        assert.equal(result.updated, 2)
+    })
+
+    it('resumes after the last completed year', async () => {
+        const loaded = []
+        const marked = []
+        await backfillLocal(null, {
+            Contract: createMemoryContract([{ id: 'a' }]),
+            years: [2014, 2015, 2016],
+            loadYear: async (year) => {
+                loaded.push(year)
+                return [{ id: 'a', local: `year-${year}` }]
+            },
+            getFreshness: async () => ({ local_backfill_year: 2014 }),
+            markYear: async (year) => { marked.push(year) },
+            markDone: async () => {},
+        })
+        assert.deepEqual(loaded, [2015, 2016])
+        assert.deepEqual(marked, [2015, 2016])
+    })
+
+    it('stops on a year error so the next run retries that year', async () => {
+        const marked = []
+        let done = false
+        const result = await backfillLocal(null, {
+            Contract: createMemoryContract([{ id: 'a' }]),
+            years: [2014, 2015, 2016],
+            loadYear: async (year) => {
+                if (year === 2015) throw new Error('xlsx missing')
+                return [{ id: 'a', local: `year-${year}` }]
+            },
+            getFreshness: async () => ({}),
+            markYear: async (year) => { marked.push(year) },
+            markDone: async () => { done = true },
+        })
+        assert.equal(done, false)
+        assert.deepEqual(marked, [2014])
+        assert.equal(result.errors.length, 1)
+        assert.equal(result.errors[0].year, 2015)
+        assert.deepEqual(result.years, [2014])
+    })
+
+    it('skips when another local backfill is already running', async () => {
+        jobLocks.localBackfill = true
+        const result = await backfillLocal(null, {
+            Contract: createMemoryContract([{ id: 'a' }]),
+            loadYear: async () => {
+                throw new Error('should not load')
+            },
+            getFreshness: async () => ({}),
+            markYear: async () => {},
+            markDone: async () => {},
+        })
+        assert.equal(result.skipped, true)
+        assert.equal(result.reason, 'in_progress')
+    })
+
+    it('skips when local_backfill_at is set', async () => {
+        const result = await backfillLocal(null, {
+            Contract: createMemoryContract([{ id: 'a' }]),
+            loadYear: async () => {
+                throw new Error('should not load')
+            },
+            getFreshness: async () => ({ local_backfill_at: new Date() }),
+            markYear: async () => {
+                throw new Error('should not mark year')
+            },
+            markDone: async () => {
+                throw new Error('should not mark done')
+            },
         })
         assert.equal(result.skipped, true)
         assert.equal(result.reason, 'already_done')

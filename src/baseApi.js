@@ -442,6 +442,18 @@ export function assertOfficialPayload(payload) {
     return payload
 }
 
+// XLSX LocalExecucao is one cell: a single place, or several joined with newlines
+// (same as adjudicante / adjudicatarios). V2 `localExecucao` is an array.
+export const LOCAL_PLACE_JOIN = '\n'
+
+export function joinExecutionPlace(executionPlace) {
+    if (executionPlace == null) return ''
+    if (Array.isArray(executionPlace)) {
+        return executionPlace.map(value => String(value ?? '')).filter(Boolean).join(LOCAL_PLACE_JOIN)
+    }
+    return String(executionPlace)
+}
+
 export function toCacheDocument(mapped, { syncedAt = new Date() } = {}) {
     if (!mapped?.id) return null
     const { contractingNifs, awardedNifs } = nifsFromDoc({
@@ -459,6 +471,7 @@ export function toCacheDocument(mapped, { syncedAt = new Date() } = {}) {
         date: mapped.date ?? null,
         type: mapped.type ?? 'unknown',
         ano: mapped.year ?? null,
+        local: joinExecutionPlace(mapped.executionPlace),
         nAnuncio: mapped.announcementNumber ?? '',
         contractingNifs,
         awardedNifs,

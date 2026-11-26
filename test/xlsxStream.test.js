@@ -39,6 +39,24 @@ describe('stringifyCell / mapColumns / rowToDoc', () => {
         assert.equal(doc.nifsBackfilled, true)
     })
 
+    it('keeps LocalExecucao as a newline-joined string like V2 executionPlace', () => {
+        const cols = mapColumns([
+            'idcontrato', 'objectoContrato', 'adjudicante', 'adjudicatarios',
+            'dataPublicacao', 'precoContratual', 'tipoprocedimento', 'LocalExecucao',
+        ])
+        const doc = rowToDoc([
+            '42',
+            'Serviços',
+            '501501501 - Instituto',
+            '519459369 - Fornecedor',
+            '2015-04-18',
+            1500,
+            'Concurso público',
+            'Portugal, Coimbra, Coimbra\nPortugal, Porto, Porto',
+        ], 2015, cols)
+        assert.equal(doc.local, 'Portugal, Coimbra, Coimbra\nPortugal, Porto, Porto')
+    })
+
     it('stringifyCell flattens rich text', () => {
         assert.equal(stringifyCell({ richText: [{ text: 'A' }, { text: 'B' }] }), 'AB')
         assert.equal(stringifyCell(null), '')

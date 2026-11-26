@@ -1,6 +1,13 @@
 import assert from 'node:assert/strict'
 import { describe, it } from 'node:test'
-import { CONTRACTS_TEXT_INDEX_NAME, dropContractsTextIndex } from '../src/models/contract.js'
+import { Contract, CONTRACTS_TEXT_INDEX_NAME, dropContractsTextIndex } from '../src/models/contract.js'
+
+describe('contract indexes', () => {
+    it('does not index local', () => {
+        const indexed = Contract.schema.indexes().some(([spec]) => spec && Object.prototype.hasOwnProperty.call(spec, 'local'))
+        assert.equal(indexed, false)
+    })
+})
 
 describe('dropContractsTextIndex', () => {
     it('drops the legacy text index by name and is idempotent', async () => {

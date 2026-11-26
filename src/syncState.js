@@ -41,6 +41,8 @@ export async function getSyncFreshness() {
         last_xlsx_success: state?.last_xlsx_success ?? null,
         last_v2_success: state?.last_v2_success ?? null,
         nif_backfill_at: state?.nif_backfill_at ?? null,
+        local_backfill_at: state?.local_backfill_at ?? null,
+        local_backfill_year: state?.local_backfill_year ?? null,
     }
 }
 
@@ -83,6 +85,24 @@ export async function markNifBackfillDone() {
     await SyncState.updateOne(
         { _id: STATE_ID },
         { $set: { nif_backfill_at: new Date() } },
+        { upsert: true }
+    )
+}
+
+export async function markLocalBackfillYear(year) {
+    await SyncState.updateOne(
+        { _id: STATE_ID },
+        { $set: { local_backfill_year: year } },
+        { upsert: true }
+    )
+}
+
+export async function markLocalBackfillDone(year) {
+    const set = { local_backfill_at: new Date() }
+    if (year != null) set.local_backfill_year = year
+    await SyncState.updateOne(
+        { _id: STATE_ID },
+        { $set: set },
         { upsert: true }
     )
 }
